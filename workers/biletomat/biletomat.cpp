@@ -11,14 +11,17 @@
 #include <signal.h>
 #include "biletomat.h"
 
-struct ticket* ticket_list;
-int* ticket_count;
+struct ticket* ticket_list[WYDZIAL_COUNT] = {NULL};
+int ticket_count[WYDZIAL_COUNT] = {0};
 void* shm_ptr = NULL;
 int shm_fd = -1;
 sem_t* sem = NULL;
 volatile sig_atomic_t running = 1;
 void cleanup() {
-    if (shm_ptr) munmap(shm_ptr, sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
+    for (int i = 0; i < WYDZIAL_COUNT; ++i) {
+        if (ticket_list[i]) munmap(ticket_list[i], sizeof(struct ticket) * MAX_TICKETS);
+    }
+    if (shm_ptr) munmap(shm_ptr, sizeof(struct ticket) * MAX_TICKETS * WYDZIAL_COUNT + sizeof(int) * WYDZIAL_COUNT);
     if (shm_fd != -1) close(shm_fd);
     if (sem) sem_close(sem);
     sem_unlink(SEM_NAME);
@@ -31,27 +34,29 @@ void sig_handler(int sig) {
     running = 0;
 }
 
-void sort_queue() {
-    int n = *ticket_count;
+void sort_queue(wydzial_t typ) {
+    int n = ticket_count[typ];
+    struct ticket* list = ticket_list[typ];
     for (int i = 0; i < n-1; ++i) {
         for (int j = 0; j < n-i-1; ++j) {
-            if (ticket_list[j].priorytet < ticket_list[j+1].priorytet ||
-                (ticket_list[j].priorytet == ticket_list[j+1].priorytet && ticket_list[j].index > ticket_list[j+1].index)) {
-                struct ticket tmp = ticket_list[j];
-                ticket_list[j] = ticket_list[j+1];
-                ticket_list[j+1] = tmp;
+            if (list[j].priorytet < list[j+1].priorytet ||
+                (list[j].priorytet == list[j+1].priorytet && list[j].index > list[j+1].index)) {
+                struct ticket tmp = list[j];
+                list[j] = list[j+1];
+                list[j+1] = tmp;
             }
         }
     }
 }
 
-void assign_ticket(pid_t pid, int prio, sem_t* sem) {
+void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
     sem_wait(sem);
-    int idx = (*ticket_count)++;
-    ticket_list[idx].index = idx;
-    ticket_list[idx].PID = pid;
-    ticket_list[idx].priorytet = prio;
-    sort_queue();
+    int idx = ticket_count[typ]++;
+    ticket_list[typ][idx].index = idx;
+    ticket_list[typ][idx].PID = pid;
+    ticket_list[typ][idx].priorytet = prio;
+    ticket_list[typ][idx].typ = typ;
+    sort_queue(typ);
     sem_post(sem);
 }
 
@@ -60,22 +65,28 @@ int main() {
     signal(SIGTERM, sig_handler);
     mkfifo(PIPE_NAME, 0666);
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    ftruncate(shm_fd, sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
-    shm_ptr = mmap(0, sizeof(struct ticket) * MAX_TICKETS + sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    ticket_list = (struct ticket*)shm_ptr;
-    ticket_count = (int*)((char*)shm_ptr + sizeof(struct ticket) * MAX_TICKETS);
-    *ticket_count = 0;
+    size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
+    ftruncate(shm_fd, shm_size);
+    shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    char* base = (char*)shm_ptr;
+    for (int i = 0; i < WYDZIAL_COUNT; ++i) {
+        ticket_list[i] = (struct ticket*)(base + i * sizeof(struct ticket) * MAX_TICKETS);
+        ticket_count[i] = 0;
+    }
     sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
 
     printf("[biletomat] Oczekiwanie na żądania przez pipe: %s\n", PIPE_NAME);
     while (running) {
         int fd = open(PIPE_NAME, O_RDONLY);
-        pid_t pid;
-        int prio = 0;
-        int read_bytes = read(fd, &pid, sizeof(pid_t));
-        if (read_bytes == sizeof(pid_t)) {
-            assign_ticket(pid, prio, sem);
-            printf("Przydzielono ticket dla PID %d\n", pid);
+        struct {
+            pid_t pid;
+            int prio;
+            wydzial_t typ;
+        } req;
+        int read_bytes = read(fd, &req, sizeof(req));
+        if (read_bytes == sizeof(req)) {
+            assign_ticket(req.pid, req.prio, req.typ, sem);
+            printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
         }
         close(fd);
     }
