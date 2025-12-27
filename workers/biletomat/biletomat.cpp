@@ -12,7 +12,7 @@
 #include "biletomat.h"
 
 struct ticket* ticket_list[WYDZIAL_COUNT] = {NULL};
-int ticket_count[WYDZIAL_COUNT] = {0};
+int* ticket_count = NULL;
 void* shm_ptr = NULL;
 int shm_fd = -1;
 sem_t* sem = NULL;
@@ -71,22 +71,30 @@ int main() {
     char* base = (char*)shm_ptr;
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         ticket_list[i] = (struct ticket*)(base + i * sizeof(struct ticket) * MAX_TICKETS);
-        ticket_count[i] = 0;
     }
+    ticket_count = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS);
+    for (int i = 0; i < WYDZIAL_COUNT; ++i) ticket_count[i] = 0;
     sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
 
     printf("[biletomat] Oczekiwanie na żądania przez pipe: %s\n", PIPE_NAME);
     while (running) {
         int fd = open(PIPE_NAME, O_RDONLY);
-        struct {
-            pid_t pid;
-            int prio;
-            wydzial_t typ;
-        } req;
-        int read_bytes = read(fd, &req, sizeof(req));
-        if (read_bytes == sizeof(req)) {
-            assign_ticket(req.pid, req.prio, req.typ, sem);
-            printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
+        char cmd[32] = {0};
+        int ncmd = read(fd, cmd, sizeof(cmd)-1);
+        if (ncmd <= 0) { close(fd); continue; }
+        if (strncmp(cmd, "ASSIGN_TICKET_TO", 16) == 0) {
+            struct { pid_t pid; int prio; wydzial_t typ; } req;
+            int r = read(fd, &req, sizeof(req));
+            if (r == sizeof(req)) {
+                assign_ticket_to(req.pid, req.prio, req.typ, sem);
+            }
+        } else if (strncmp(cmd, "ASSIGN_TICKET", 13) == 0) {
+            struct { pid_t pid; int prio; wydzial_t typ; } req;
+            int r = read(fd, &req, sizeof(req));
+            if (r == sizeof(req)) {
+                assign_ticket(req.pid, req.prio, req.typ, sem);
+                printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
+            }
         }
         close(fd);
     }

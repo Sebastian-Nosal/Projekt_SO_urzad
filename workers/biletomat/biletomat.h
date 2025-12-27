@@ -28,6 +28,7 @@ void sort_queue(wydzial_t typ);
 void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem);
 void cleanup();
 void sig_handler(int sig);
+void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem);
 
 #endif // BILETOMAT_H
 
