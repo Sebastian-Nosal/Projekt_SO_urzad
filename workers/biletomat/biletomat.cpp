@@ -17,7 +17,10 @@ void* shm_ptr = NULL;
 int shm_fd = -1;
 sem_t* sem = NULL;
 volatile sig_atomic_t running = 1;
+volatile sig_atomic_t zamkniecie_urzedu = 0;
+int liczba_automatow = 1;
 void cleanup() {
+    void sigusr2_handler(int sig) { zamkniecie_urzedu = 1; running = 0; }
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         if (ticket_list[i]) munmap(ticket_list[i], sizeof(struct ticket) * MAX_TICKETS);
     }
@@ -63,6 +66,7 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
 int main() {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGUSR2, sigusr2_handler); // Dyrektor: zamknij urząd
     mkfifo(PIPE_NAME, 0666);
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
@@ -78,22 +82,43 @@ int main() {
 
     printf("[biletomat] Oczekiwanie na żądania przez pipe: %s\n", PIPE_NAME);
     while (running) {
+        // Dynamiczna liczba automatów na podstawie liczby petentów w kolejce po bilet
+        int suma = 0;
+        for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
+        int N = 60; // przykładowa maksymalna liczba petentów w urzędzie
+        int K = N/3;
+        if (suma > 2*K) liczba_automatow = 3;
+        else if (suma > K) liczba_automatow = 2;
+        else liczba_automatow = 1;
+
         int fd = open(PIPE_NAME, O_RDONLY);
         char cmd[32] = {0};
         int ncmd = read(fd, cmd, sizeof(cmd)-1);
         if (ncmd <= 0) { close(fd); continue; }
+        if (zamkniecie_urzedu) { close(fd); break; }
         if (strncmp(cmd, "ASSIGN_TICKET_TO", 16) == 0) {
             struct { pid_t pid; int prio; wydzial_t typ; } req;
             int r = read(fd, &req, sizeof(req));
             if (r == sizeof(req)) {
-                assign_ticket_to(req.pid, req.prio, req.typ, sem);
+                // VIP - priorytet 100
+                if (req.prio >= 100) {
+                    assign_ticket(req.pid, req.prio, req.typ, sem);
+                    printf("[biletomat] VIP ticket dla PID %d, typ %d\n", req.pid, req.typ);
+                } else {
+                    assign_ticket_to(req.pid, req.prio, req.typ, sem);
+                }
             }
         } else if (strncmp(cmd, "ASSIGN_TICKET", 13) == 0) {
             struct { pid_t pid; int prio; wydzial_t typ; } req;
             int r = read(fd, &req, sizeof(req));
             if (r == sizeof(req)) {
-                assign_ticket(req.pid, req.prio, req.typ, sem);
-                printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
+                // Sprawdź limit biletów
+                if (ticket_count[req.typ] < MAX_TICKETS) {
+                    assign_ticket(req.pid, req.prio, req.typ, sem);
+                    printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
+                } else {
+                    printf("[biletomat] Brak biletów dla wydziału %d\n", req.typ);
+                }
             }
         }
         close(fd);

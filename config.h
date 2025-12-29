@@ -9,4 +9,16 @@ typedef enum {
 	WYDZIAL_SA,
 } wydzial_t;
 
+#define PETENT_LIMIT_SC 20
+#define PETENT_LIMIT_KM 20
+#define PETENT_LIMIT_ML 20
+#define PETENT_LIMIT_PD 20
+#define PETENT_LIMIT_SA 40
+
+#define PROB_SA_SOLVE 0.6
+#define PROB_SA_TO_SC 0.1
+#define PROB_SA_TO_KM 0.1
+#define PROB_SA_TO_ML 0.1
+#define PROB_SA_TO_PD 0.1
+
 #endif 
