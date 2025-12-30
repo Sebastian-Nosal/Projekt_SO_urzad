@@ -66,7 +66,7 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
 int main() {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
-    signal(SIGUSR2, sigusr2_handler); // Dyrektor: zamknij urząd
+    signal(SIGUSR2, sigusr2_handler)
     mkfifo(PIPE_NAME, 0666);
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
@@ -82,10 +82,9 @@ int main() {
 
     printf("[biletomat] Oczekiwanie na żądania przez pipe: %s\n", PIPE_NAME);
     while (running) {
-        // Dynamiczna liczba automatów na podstawie liczby petentów w kolejce po bilet
         int suma = 0;
         for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
-        int N = 60; // przykładowa maksymalna liczba petentów w urzędzie
+        int N = 60;
         int K = N/3;
         if (suma > 2*K) liczba_automatow = 3;
         else if (suma > K) liczba_automatow = 2;
@@ -100,7 +99,6 @@ int main() {
             struct { pid_t pid; int prio; wydzial_t typ; } req;
             int r = read(fd, &req, sizeof(req));
             if (r == sizeof(req)) {
-                // VIP - priorytet 100
                 if (req.prio >= 100) {
                     assign_ticket(req.pid, req.prio, req.typ, sem);
                     printf("[biletomat] VIP ticket dla PID %d, typ %d\n", req.pid, req.typ);
@@ -112,7 +110,6 @@ int main() {
             struct { pid_t pid; int prio; wydzial_t typ; } req;
             int r = read(fd, &req, sizeof(req));
             if (r == sizeof(req)) {
-                // Sprawdź limit biletów
                 if (ticket_count[req.typ] < MAX_TICKETS) {
                     assign_ticket(req.pid, req.prio, req.typ, sem);
                     printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
