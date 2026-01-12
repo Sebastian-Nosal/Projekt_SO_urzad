@@ -52,7 +52,7 @@ void start_simulation(int liczba_petentow) {
 	for (int i = 0; i < WYDZIAL_COUNT; ++i) petent_sum += petent_limits[i];
 	int petenty_do_uruchomienia = liczba_petentow > 0 ? liczba_petentow : petent_sum;
 
-	pid_t* allowed_petents = malloc(sizeof(pid_t) * petenty_do_uruchomienia);
+	pid_t* allowed_petents = (pid_t*) malloc(sizeof(pid_t) * petenty_do_uruchomienia);
 	int allowed_count = 0;
 
 	for (int i = 0, idx = 0; i < WYDZIAL_COUNT; ++i) {

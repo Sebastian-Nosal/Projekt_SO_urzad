@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -11,30 +14,47 @@
 #include <signal.h>
 #include "biletomat.h"
 
+extern volatile sig_atomic_t running;
+extern volatile sig_atomic_t zamkniecie_urzedu;
+void sig_handler(int sig) {
+    running = 0;
+    if (sig == SIGUSR2) {
+        zamkniecie_urzedu = 1;
+    }
+}
+
+void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
+    sem_wait(sem);
+    int idx = ticket_count[typ]++;
+    ticket_list[typ][idx].index = idx;
+    ticket_list[typ][idx].PID = pid;
+    ticket_list[typ][idx].priorytet = prio;
+    ticket_list[typ][idx].typ = typ;
+    sem_post(sem);
+}
+
+
 struct ticket* ticket_list[WYDZIAL_COUNT] = {NULL};
-int* ticket_count = NULL;
+int ticket_count[WYDZIAL_COUNT] = {0};
 void* shm_ptr = NULL;
 int shm_fd = -1;
 sem_t* sem = NULL;
 volatile sig_atomic_t running = 1;
 volatile sig_atomic_t zamkniecie_urzedu = 0;
 int liczba_automatow = 1;
+
+void sigusr2_handler(int sig) { zamkniecie_urzedu = 1; running = 0; }
+
 void cleanup() {
-    void sigusr2_handler(int sig) { zamkniecie_urzedu = 1; running = 0; }
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         if (ticket_list[i]) munmap(ticket_list[i], sizeof(struct ticket) * MAX_TICKETS);
     }
     if (shm_ptr) munmap(shm_ptr, sizeof(struct ticket) * MAX_TICKETS * WYDZIAL_COUNT + sizeof(int) * WYDZIAL_COUNT);
-    if (shm_fd != -1) close(shm_fd);
     if (sem) sem_close(sem);
     sem_unlink(SEM_NAME);
     unlink(PIPE_NAME);
     shm_unlink(SHM_NAME);
     printf("[biletomat] Zasoby posprzątane.\n");
-}
-
-void sig_handler(int sig) {
-    running = 0;
 }
 
 void sort_queue(wydzial_t typ) {
@@ -66,18 +86,21 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
 int main() {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
-    signal(SIGUSR2, sigusr2_handler)
+    signal(SIGUSR2, sigusr2_handler);
     mkfifo(PIPE_NAME, 0666);
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
-    ftruncate(shm_fd, shm_size);
+    int _ft = ftruncate(shm_fd, shm_size);
+    if (_ft == -1) perror("ftruncate biletomat");
     shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     char* base = (char*)shm_ptr;
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         ticket_list[i] = (struct ticket*)(base + i * sizeof(struct ticket) * MAX_TICKETS);
     }
-    ticket_count = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS);
-    for (int i = 0; i < WYDZIAL_COUNT; ++i) ticket_count[i] = 0;
+    int* shm_ticket_count = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS);
+    for (int i = 0; i < WYDZIAL_COUNT; ++i) {
+        ticket_count[i] = shm_ticket_count[i] = 0;
+    }
     sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
 
     printf("[biletomat] Oczekiwanie na żądania: %s\n", PIPE_NAME);

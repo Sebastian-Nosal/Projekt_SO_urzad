@@ -57,7 +57,8 @@ int main(int argc, char* argv[]) {
 
     // Sprawdź wyczerpanie urzędników przez shared memory
     int shm_fd = shm_open(URZEDNIK_EXHAUST_SHM, O_CREAT | O_RDWR, 0666);
-    ftruncate(shm_fd, sizeof(int) * liczba_urzednikow);
+    int _ft = ftruncate(shm_fd, sizeof(int) * liczba_urzednikow);
+    if (_ft == -1) perror("ftruncate dyrektor");
     int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * liczba_urzednikow, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     // Dyrektor cyklicznie sprawdza status urzędników
     for (int t = 0; t < 60; ++t) {

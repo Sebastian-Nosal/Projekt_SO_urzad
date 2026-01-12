@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include "../../config.h"
 #include "../biletomat/biletomat.h"
+#include "../dyrektor/dyrektor.h"
 
 #define RAPORT_FILE "raport_urzednik.txt"
 volatile sig_atomic_t zamkniecie_urzedu = 0;
@@ -49,9 +50,16 @@ int main(int argc, char* argv[]) {
     srand(time(NULL) ^ getpid());
     int licznik = get_limit(typ);
 
-    // Shared memory do zgłaszania wyczerpania
-    int shm_fd = shm_open(URZEDNIK_EXHAUST_SHM, O_RDWR, 0666);
-    int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    
+    int shm_fd_exhaust = shm_open(URZEDNIK_EXHAUST_SHM, O_RDWR, 0666);
+    if (shm_fd_exhaust < 0) {
+        perror("shm_open URZEDNIK_EXHAUST_SHM");
+        return 1;
+    }
+    int res_tr = ftruncate(shm_fd_exhaust, sizeof(int) * WYDZIAL_COUNT);
+    if (res_tr == -1) perror("ftruncate URZEDNIK_EXHAUST_SHM");
+    int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
+    if (urzednik_exhausted == MAP_FAILED) { perror("mmap urzednik_exhausted"); return 1; }
     urzednik_exhausted[typ] = 0;
     int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
@@ -64,8 +72,8 @@ int main(int argc, char* argv[]) {
     }
     sem_t* sem = sem_open(SEM_NAME, 0);
 
-    signal(SIGUSR1, sigusr1_handler); // Dyrektor: obsłuż bieżącego i kończ
-    signal(SIGUSR2, sigusr2_handler); // Dyrektor: zamknij urząd
+    signal(SIGUSR1, sigusr1_handler); 
+    signal(SIGUSR2, sigusr2_handler);
 
     FILE* raport = fopen(RAPORT_FILE, "a");
     if (!raport) raport = stdout;
@@ -76,7 +84,6 @@ int main(int argc, char* argv[]) {
             urzednik_exhausted[typ] = 1;
         }
         if (dyrektor_koniec) {
-            // Obsłuż bieżącego petenta jeśli jest
             sem_wait(sem);
             int n = ticket_count[typ];
             if (n > 0 && licznik > 0) {
@@ -90,7 +97,6 @@ int main(int argc, char* argv[]) {
             break;
         }
         if (zamkniecie_urzedu) {
-            // Zapisz wszystkich oczekujących do raportu
             sem_wait(sem);
             int n = ticket_count[typ];
             for (int i = 0; i < n; ++i) {
@@ -120,7 +126,6 @@ int main(int argc, char* argv[]) {
                 licznik--;
             } else {
                 wydzial_t cel = random_sa_target();
-                // Sprawdź limit w docelowym wydziale
                 int cel_limit = get_limit(cel);
                 sem_wait(sem);
                 int cel_n = ticket_count[cel];
@@ -134,15 +139,12 @@ int main(int argc, char* argv[]) {
                     sem_post(sem);
                 } else {
                     fprintf(raport, "[Urzędnik SA] BRAK MIEJSC w wydziale %d dla PID=%d, raport NIEPRZYJĘTY\n", cel, t.PID);
-                    // Raportuj nieprzyjętego petenta
                 }
             }
         } else {
-            // 10% do kasy, reszta załatwiona
             double r = (double)rand() / RAND_MAX;
             if (r < 0.1) {
                 fprintf(raport, "[Urzędnik %d] Skierowano PID=%d do kasy\n", typ, t.PID);
-                // TODO: Komunikacja z kasą (np. przez pipe)
             } else {
                 fprintf(raport, "[Urzędnik %d] Sprawa załatwiona dla PID=%d\n", typ, t.PID);
                 licznik--;

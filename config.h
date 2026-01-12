@@ -7,6 +7,7 @@ typedef enum {
 	WYDZIAL_ML, 
 	WYDZIAL_PD,
 	WYDZIAL_SA,
+    WYDZIAL_COUNT
 } wydzial_t;
 
 #define PETENT_LIMIT_SC 20
