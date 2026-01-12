@@ -80,45 +80,79 @@ int main() {
     for (int i = 0; i < WYDZIAL_COUNT; ++i) ticket_count[i] = 0;
     sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
 
-    printf("[biletomat] Oczekiwanie na żądania przez pipe: %s\n", PIPE_NAME);
+    printf("[biletomat] Oczekiwanie na żądania: %s\n", PIPE_NAME);
+    pid_t biletomat_clones[3] = {0};
+    int active_clones = 1;
+
+    auto spawn_clone = [](int idx) -> pid_t {
+        pid_t pid = fork();
+        if (pid == 0) {
+            while (running) {
+                int fd = open(PIPE_NAME, O_RDONLY);
+                char cmd[32] = {0};
+                int ncmd = read(fd, cmd, sizeof(cmd)-1);
+                if (ncmd <= 0) { close(fd); continue; }
+                if (zamkniecie_urzedu) { close(fd); break; }
+                if (strncmp(cmd, "ASSIGN_TICKET_TO", 16) == 0) {
+                    struct { pid_t pid; int prio; wydzial_t typ; } req;
+                    int r = read(fd, &req, sizeof(req));
+                    if (r == sizeof(req)) {
+                        if (req.prio >= 100) {
+                            assign_ticket(req.pid, req.prio, req.typ, sem);
+                            printf("[biletomat-klon %d] VIP ticket dla PID %d, typ %d\n", idx, req.pid, req.typ);
+                        } else {
+                            assign_ticket_to(req.pid, req.prio, req.typ, sem);
+                        }
+                    }
+                } else if (strncmp(cmd, "ASSIGN_TICKET", 13) == 0) {
+                    struct { pid_t pid; int prio; wydzial_t typ; } req;
+                    int r = read(fd, &req, sizeof(req));
+                    if (r == sizeof(req)) {
+                        if (ticket_count[req.typ] < MAX_TICKETS) {
+                            assign_ticket(req.pid, req.prio, req.typ, sem);
+                            printf("[biletomat-klon %d] Przydzielono ticket dla PID %d, typ %d\n", idx, req.pid, req.typ);
+                        } else {
+                            printf("[biletomat-klon %d] Brak biletów dla wydziału %d\n", idx, req.typ);
+                        }
+                    }
+                }
+                close(fd);
+            }
+            exit(0);
+        }
+        return pid;
+    };
+
+    biletomat_clones[0] = spawn_clone(0);
+    active_clones = 1;
+
     while (running) {
         int suma = 0;
         for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
         int N = 60;
         int K = N/3;
-        if (suma > 2*K) liczba_automatow = 3;
-        else if (suma > K) liczba_automatow = 2;
-        else liczba_automatow = 1;
+        int required_clones = 1;
+        if (suma > 2*K) required_clones = 3;
+        else if (suma > K) required_clones = 2;
 
-        int fd = open(PIPE_NAME, O_RDONLY);
-        char cmd[32] = {0};
-        int ncmd = read(fd, cmd, sizeof(cmd)-1);
-        if (ncmd <= 0) { close(fd); continue; }
-        if (zamkniecie_urzedu) { close(fd); break; }
-        if (strncmp(cmd, "ASSIGN_TICKET_TO", 16) == 0) {
-            struct { pid_t pid; int prio; wydzial_t typ; } req;
-            int r = read(fd, &req, sizeof(req));
-            if (r == sizeof(req)) {
-                if (req.prio >= 100) {
-                    assign_ticket(req.pid, req.prio, req.typ, sem);
-                    printf("[biletomat] VIP ticket dla PID %d, typ %d\n", req.pid, req.typ);
-                } else {
-                    assign_ticket_to(req.pid, req.prio, req.typ, sem);
-                }
-            }
-        } else if (strncmp(cmd, "ASSIGN_TICKET", 13) == 0) {
-            struct { pid_t pid; int prio; wydzial_t typ; } req;
-            int r = read(fd, &req, sizeof(req));
-            if (r == sizeof(req)) {
-                if (ticket_count[req.typ] < MAX_TICKETS) {
-                    assign_ticket(req.pid, req.prio, req.typ, sem);
-                    printf("Przydzielono ticket dla PID %d, typ %d\n", req.pid, req.typ);
-                } else {
-                    printf("[biletomat] Brak biletów dla wydziału %d\n", req.typ);
-                }
+        for (int i = active_clones; i < required_clones; ++i) {
+            biletomat_clones[i] = spawn_clone(i);
+            printf("[biletomat] Uruchomiono  #%d PID=%d\n", i, biletomat_clones[i]);
+        }
+        for (int i = required_clones; i < active_clones; ++i) {
+            if (biletomat_clones[i] > 0) {
+                kill(biletomat_clones[i], SIGTERM);
+                printf("[biletomat] Zatrzymano #%d PID=%d\n", i, biletomat_clones[i]);
+                biletomat_clones[i] = 0;
             }
         }
-        close(fd);
+        active_clones = required_clones;
+
+        sleep(1);
+    }
+
+    for (int i = 0; i < active_clones; ++i) {
+        if (biletomat_clones[i] > 0) kill(biletomat_clones[i], SIGTERM);
     }
     cleanup();
     return 0;

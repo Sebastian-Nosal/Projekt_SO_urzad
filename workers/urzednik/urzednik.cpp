@@ -48,6 +48,11 @@ int main(int argc, char* argv[]) {
     wydzial_t typ = (wydzial_t)atoi(argv[1]);
     srand(time(NULL) ^ getpid());
     int licznik = get_limit(typ);
+
+    // Shared memory do zgłaszania wyczerpania
+    int shm_fd = shm_open(URZEDNIK_EXHAUST_SHM, O_RDWR, 0666);
+    int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    urzednik_exhausted[typ] = 0;
     int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
     void* shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -67,6 +72,9 @@ int main(int argc, char* argv[]) {
 
     printf("[Urzędnik %d] Start, limit: %d\n", typ, licznik);
     while (1) {
+        if (licznik <= 0) {
+            urzednik_exhausted[typ] = 1;
+        }
         if (dyrektor_koniec) {
             // Obsłuż bieżącego petenta jeśli jest
             sem_wait(sem);
@@ -93,10 +101,6 @@ int main(int argc, char* argv[]) {
             sem_post(sem);
             break;
         }
-        if (licznik <= 0) {
-            sleep(1);
-            continue;
-        }
         sem_wait(sem);
         int n = ticket_count[typ];
         if (n == 0) {
@@ -116,19 +120,29 @@ int main(int argc, char* argv[]) {
                 licznik--;
             } else {
                 wydzial_t cel = random_sa_target();
-                fprintf(raport, "[Urzędnik SA] Przekierowuje PID=%d do wydziału %d\n", t.PID, cel);
+                // Sprawdź limit w docelowym wydziale
+                int cel_limit = get_limit(cel);
                 sem_wait(sem);
-                int idx2 = ticket_count[cel]++;
-                ticket_list[cel][idx2] = t;
-                ticket_list[cel][idx2].typ = cel;
+                int cel_n = ticket_count[cel];
                 sem_post(sem);
+                if (cel_n < cel_limit) {
+                    fprintf(raport, "[Urzędnik SA] Przekierowuje PID=%d do wydziału %d\n", t.PID, cel);
+                    sem_wait(sem);
+                    int idx2 = ticket_count[cel]++;
+                    ticket_list[cel][idx2] = t;
+                    ticket_list[cel][idx2].typ = cel;
+                    sem_post(sem);
+                } else {
+                    fprintf(raport, "[Urzędnik SA] BRAK MIEJSC w wydziale %d dla PID=%d, raport NIEPRZYJĘTY\n", cel, t.PID);
+                    // Raportuj nieprzyjętego petenta
+                }
             }
         } else {
             // 10% do kasy, reszta załatwiona
             double r = (double)rand() / RAND_MAX;
             if (r < 0.1) {
                 fprintf(raport, "[Urzędnik %d] Skierowano PID=%d do kasy\n", typ, t.PID);
-                // Tu można dodać komunikację z kasą
+                // TODO: Komunikacja z kasą (np. przez pipe)
             } else {
                 fprintf(raport, "[Urzędnik %d] Sprawa załatwiona dla PID=%d\n", typ, t.PID);
                 licznik--;

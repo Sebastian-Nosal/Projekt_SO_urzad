@@ -4,7 +4,15 @@
 #include <sys/types.h>
 #include "../../config.h"
 
+
+typedef struct {
+	wydzial_t typ;
+	int priorytet;
+	int isVIP;
+	int isInside;
+} PetentData;
+
 // Funkcje obsługi petenta
-void petent_start(wydzial_t typ, int priorytet, int is_vip);
+void petent_start(PetentData* petent);
 
 #endif // PETENT_H
