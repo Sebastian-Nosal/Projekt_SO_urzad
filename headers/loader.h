@@ -3,7 +3,14 @@
 
 #include "../config.h"
 
-// Funkcja uruchamiająca symulację urzędu
 void start_simulation(int liczba_petentow);
+#include <csignal>
 
-#endif // LOADER_H
+extern volatile pid_t g_dyrektor_pid;
+extern volatile sig_atomic_t g_pending_sigint;
+
+// Globalne PIDs dla zarządzania procesami
+extern pid_t* g_all_pids;
+extern int g_all_pids_count;
+
+#endif

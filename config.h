@@ -22,6 +22,6 @@ typedef enum {
 #define PROB_SA_TO_ML 0.1
 #define PROB_SA_TO_PD 0.1
 
-#define PETENT_AMOUNT 150
+#define PETENT_AMOUNT 1000
 
 #endif 

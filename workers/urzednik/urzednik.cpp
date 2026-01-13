@@ -52,14 +52,12 @@ int main(int argc, char* argv[]) {
 
     
     int shm_fd_exhaust = -1;
-    // Spróbuj otworzyć istniejący SHM, poczekaj trochę jeśli jeszcze nie utworzony przez dyrektora
     for (int attempt = 0; attempt < 10; ++attempt) {
         shm_fd_exhaust = shm_open(URZEDNIK_EXHAUST_SHM, O_RDWR, 0666);
         if (shm_fd_exhaust >= 0) break;
         sleep(1);
     }
     if (shm_fd_exhaust < 0) {
-        // fallback: utwórz go samodzielnie (tylko jeśli dyrektor nie utworzył w rozsądnym czasie)
         shm_fd_exhaust = shm_open(URZEDNIK_EXHAUST_SHM, O_CREAT | O_RDWR, 0666);
         if (shm_fd_exhaust < 0) { perror("shm_open URZEDNIK_EXHAUST_SHM"); return 1; }
         int _ft = ftruncate(shm_fd_exhaust, sizeof(int) * WYDZIAL_COUNT);
@@ -68,8 +66,14 @@ int main(int argc, char* argv[]) {
     int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
     if (urzednik_exhausted == MAP_FAILED) { perror("mmap urzednik_exhausted"); return 1; }
     urzednik_exhausted[typ] = 0;
-    int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
-    size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
+    int shm_fd = -1;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+        if (shm_fd >= 0) break;
+        sleep(1);
+    }
+    if (shm_fd < 0) { perror("shm_open SHM_NAME"); return 1; }
+    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + WYDZIAL_COUNT * sizeof(int);
     void* shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     char* base = (char*)shm_ptr;
     struct ticket* ticket_list[WYDZIAL_COUNT];
@@ -77,34 +81,62 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         ticket_list[i] = (struct ticket*)(base + i * sizeof(struct ticket) * MAX_TICKETS);
     }
-    sem_t* sem = sem_open(SEM_NAME, 0);
+    sem_t* sem = SEM_FAILED;
+    for (int attempt = 0; attempt < 100000; ++attempt) {
+        sem = sem_open(SEM_NAME, 0);
+        if (sem != SEM_FAILED) break;
+        sleep(1);
+    }
+    if (sem == SEM_FAILED) { perror("sem_open SEM_NAME"); return 1; }
 
     signal(SIGUSR1, sigusr1_handler); 
     signal(SIGUSR2, sigusr2_handler);
 
     FILE* raport = fopen(RAPORT_FILE, "a");
     if (!raport) raport = stdout;
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (raport != stdout) setvbuf(raport, NULL, _IONBF, 0);
 
     printf("[Urzędnik PID=%d, typ=%d] Start, limit: %d\n", getpid(), typ, licznik);
     while (1) {
         if (licznik <= 0) {
-            urzednik_exhausted[typ] = 1;
-            printf("[Urzędnik PID=%d, typ=%d] Wyczepany (limit wyczerpany)\n", getpid(), typ);
+            if (!urzednik_exhausted[typ]) {
+                urzednik_exhausted[typ] = 1;
+                printf("[Urzędnik PID=%d, typ=%d] Wyczepany (limit wyczerpany)\n", getpid(), typ);
+                sem_wait(sem);
+                int pending = ticket_count[typ];
+                for (int i = 0; i < pending; ++i) {
+                    struct ticket tt = ticket_list[typ][i];
+                    fprintf(raport, "[Urzędnik %d] (EXHAUST) ODPRAWIONY: PID=%d, idx=%d\n", typ, tt.PID, tt.index);
+                    printf("[Urzędnik PID=%d] (EXHAUST) ODPRAWIONY: PID=%d, idx=%d\n", getpid(), tt.PID, tt.index);
+                    kill(tt.PID, SIGTERM);
+                }
+                ticket_count[typ] = 0;
+                sem_post(sem);
+            }
         }
         if (dyrektor_koniec) {
+            if (licznik <= 0) {
+                printf("[Urzędnik PID=%d, typ=%d] Dyrektor nakazał koniec. Kończę pracę.\n", getpid(), typ);
+                break;
+            }
             sem_wait(sem);
             int n = ticket_count[typ];
-            if (n > 0 && licznik > 0) {
+            if (n > 0) {
                 struct ticket t = ticket_list[typ][0];
                 for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
                 ticket_count[typ]--;
+                // Najpierw loguj, flushuj, potem powiadom petenta, że jest obsługiwany
                 fprintf(raport, "[Urzędnik %d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
                 printf("[Urzędnik PID=%d, typ=%d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
+                fflush(raport);
+                fflush(stdout);
+                kill(t.PID, SIGUSR1);
                 licznik--;
                 printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
             }
             sem_post(sem);
-            break;
+            continue;
         }
         if (zamkniecie_urzedu) {
             sem_wait(sem);
@@ -120,6 +152,9 @@ int main(int argc, char* argv[]) {
         }
         sem_wait(sem);
         int n = ticket_count[typ];
+        // Debug: pokaż liczbę biletów w kolejce dla tego wydziału
+        printf("[DEBUG Urzędnik PID=%d, typ=%d] ticket_count[%d]=%d\n", getpid(), typ, typ, n);
+        fflush(stdout);
         if (n == 0) {
             sem_post(sem);
             sleep(1);
@@ -129,8 +164,12 @@ int main(int argc, char* argv[]) {
         for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
         ticket_count[typ]--;
         sem_post(sem);
+        // Najpierw loguj, flushuj, potem powiadom petenta, że jest obsługiwany
         fprintf(raport, "[Urzędnik %d] Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
         printf("[Urzędnik PID=%d, typ=%d] Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
+        fflush(raport);
+        fflush(stdout);
+        kill(t.PID, SIGUSR1);
             printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
         if (typ == WYDZIAL_SA) {
             double r = (double)rand() / RAND_MAX;

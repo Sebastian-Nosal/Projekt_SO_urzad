@@ -11,6 +11,9 @@
 volatile sig_atomic_t running = 1;
 
 void sig_handler(int sig) {
+    if (sig == SIGUSR1) {
+        printf("[kasa] Otrzymano SIGUSR1 - kończę pracę.\n");
+    }
     running = 0;
 }
 
@@ -36,6 +39,7 @@ void obsluga_kasy() {
 int main() {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGUSR1, sig_handler);
     obsluga_kasy();
     return 0;
 }

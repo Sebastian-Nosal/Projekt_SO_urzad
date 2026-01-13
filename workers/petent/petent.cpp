@@ -13,6 +13,20 @@ volatile sig_atomic_t zamkniecie_urzedu = 0;
 
 void sigusr2_handler(int sig) { zamkniecie_urzedu = 1; }
 
+// SIGUSR1: petent jest obsługiwany przez urzędnika
+void sigusr1_handler(int sig) {
+	pid_t pid = getpid();
+	printf("[petent] PID=%d obsługiwany przez urzędnika\n", pid);
+	_exit(0);
+}
+
+// SIGTERM: petent zostaje odprawiony z kwitkiem przez urzędnika (exhausted)
+void sigterm_handler(int sig) {
+	pid_t pid = getpid();
+	printf("PID: %d odprawiony z kwitkiem\n", pid);
+	_exit(0);
+}
+
 void petent_start(PetentData* petent) {
 	pid_t pid = getpid();
 	int fd = open(PIPE_NAME, O_WRONLY);
@@ -20,16 +34,26 @@ void petent_start(PetentData* petent) {
 		perror("[petent] Nie można otworzyć pipe do biletomatu");
 		exit(1);
 	}
-	char cmd[32];
+	// Utwórz pakiet: komenda (16 bajtów) + struktura
+	struct {
+		char cmd[16];
+		pid_t pid;
+		int prio;
+		wydzial_t typ;
+	} packet;
+	
 	if (petent->isVIP)
-		strcpy(cmd, "ASSIGN_TICKET_TO");
+		strcpy(packet.cmd, "ASSIGN_TICKET_TO");
 	else
-		strcpy(cmd, "ASSIGN_TICKET");
+		strcpy(packet.cmd, "ASSIGN_TICKET");
+	
+	packet.pid = pid;
+	packet.prio = petent->priorytet;
+	packet.typ = petent->typ;
+	
 	// Log taking the ticket
 	printf("[petent] PID=%d pobiera bilet dla wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
-	write(fd, cmd, strlen(cmd));
-	struct { pid_t pid; int prio; wydzial_t typ; } req = { pid, petent->priorytet, petent->typ };
-	write(fd, &req, sizeof(req));
+	(void)write(fd, &packet, sizeof(packet));
 	close(fd);
 	printf("[petent] PID=%d zgłosił się do wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
 }
@@ -45,6 +69,8 @@ int main(int argc, char* argv[]) {
 	petent.isVIP = (argc > 3) ? atoi(argv[3]) : 0;
 	petent.isInside = (argc > 4) ? atoi(argv[4]) : 0;
 	signal(SIGUSR2, sigusr2_handler);
+	signal(SIGTERM, sigterm_handler);
+	signal(SIGUSR1, sigusr1_handler);
 	petent_start(&petent);
 	// Oczekiwanie na obsługę lub zamknięcie urzędu
 	while (!zamkniecie_urzedu) {

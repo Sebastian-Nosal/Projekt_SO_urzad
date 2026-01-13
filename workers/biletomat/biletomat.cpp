@@ -10,30 +10,35 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <semaphore.h>
+// Rewritten clean implementation of biletomat
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <semaphore.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include "biletomat.h"
 
 extern volatile sig_atomic_t running;
 extern volatile sig_atomic_t zamkniecie_urzedu;
+
+// Wskaźnik do tablicy liczników biletek w pamięci współdzielonej
+int* shm_ticket_count = NULL;
+
 void sig_handler(int sig) {
-    running = 0;
-    if (sig == SIGUSR2) {
-        zamkniecie_urzedu = 1;
+    if (sig == SIGUSR1) {
+        printf("[biletomat] Otrzymano SIGUSR1 - kończę pracę.\n");
+        running = 0;
+    } else {
+        running = 0;
     }
+    if (sig == SIGUSR2) zamkniecie_urzedu = 1;
 }
-
-void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
-    sem_wait(sem);
-    int idx = ticket_count[typ]++;
-    ticket_list[typ][idx].index = idx;
-    ticket_list[typ][idx].PID = pid;
-    ticket_list[typ][idx].priorytet = prio;
-    ticket_list[typ][idx].typ = typ;
-    printf("[biletomat] Przydzielono ticket (no-sort) id=%d dla PID=%d, wydzial=%d, priorytet=%d\n", idx, pid, typ, prio);
-    sem_post(sem);
-}
-
 
 struct ticket* ticket_list[WYDZIAL_COUNT] = {NULL};
 int ticket_count[WYDZIAL_COUNT] = {0};
@@ -50,7 +55,7 @@ void cleanup() {
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         if (ticket_list[i]) munmap(ticket_list[i], sizeof(struct ticket) * MAX_TICKETS);
     }
-    if (shm_ptr) munmap(shm_ptr, sizeof(struct ticket) * MAX_TICKETS * WYDZIAL_COUNT + sizeof(int) * WYDZIAL_COUNT);
+    if (shm_ptr) munmap(shm_ptr, WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int)));
     if (sem) sem_close(sem);
     sem_unlink(SEM_NAME);
     unlink(PIPE_NAME);
@@ -73,13 +78,38 @@ void sort_queue(wydzial_t typ) {
     }
 }
 
-void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
+void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
     sem_wait(sem);
-    int idx = ticket_count[typ]++;
+    int idx = 0;
+    if (shm_ticket_count) {
+        idx = shm_ticket_count[typ]++;
+        ticket_count[typ] = shm_ticket_count[typ];
+    } else {
+        idx = ticket_count[typ]++;
+    }
     ticket_list[typ][idx].index = idx;
     ticket_list[typ][idx].PID = pid;
     ticket_list[typ][idx].priorytet = prio;
     ticket_list[typ][idx].typ = typ;
+    if (shm_ticket_count) shm_ticket_count[typ] = ticket_count[typ];
+    printf("[biletomat] Przydzielono ticket (no-sort) id=%d dla PID=%d, wydzial=%d, priorytet=%d\n", idx, pid, typ, prio);
+    sem_post(sem);
+}
+
+void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
+    sem_wait(sem);
+    int idx = 0;
+    if (shm_ticket_count) {
+        idx = shm_ticket_count[typ]++;
+        ticket_count[typ] = shm_ticket_count[typ];
+    } else {
+        idx = ticket_count[typ]++;
+    }
+    ticket_list[typ][idx].index = idx;
+    ticket_list[typ][idx].PID = pid;
+    ticket_list[typ][idx].priorytet = prio;
+    ticket_list[typ][idx].typ = typ;
+    if (shm_ticket_count) shm_ticket_count[typ] = ticket_count[typ];
     sort_queue(typ);
     printf("[biletomat] Przydzielono ticket id=%d dla PID=%d, wydzial=%d, priorytet=%d (posortowano)\n", idx, pid, typ, prio);
     sem_post(sem);
@@ -88,10 +118,11 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
 int main() {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGUSR1, sig_handler);
     signal(SIGUSR2, sigusr2_handler);
     mkfifo(PIPE_NAME, 0666);
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    size_t shm_size = WYDZIAL_COUNT * (sizeof(struct ticket) * MAX_TICKETS + sizeof(int));
+    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + WYDZIAL_COUNT * sizeof(int);
     int _ft = ftruncate(shm_fd, shm_size);
     if (_ft == -1) perror("ftruncate biletomat");
     shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -99,7 +130,7 @@ int main() {
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         ticket_list[i] = (struct ticket*)(base + i * sizeof(struct ticket) * MAX_TICKETS);
     }
-    int* shm_ticket_count = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS);
+    shm_ticket_count = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS);
     for (int i = 0; i < WYDZIAL_COUNT; ++i) {
         ticket_count[i] = shm_ticket_count[i] = 0;
     }
@@ -112,33 +143,52 @@ int main() {
     auto spawn_clone = [](int idx) -> pid_t {
         pid_t pid = fork();
         if (pid == 0) {
+            printf("[biletomat-klon %d] Uruchomiony, czekam na żądania...\n", idx);
+            fflush(stdout);
             while (running) {
+                printf("[biletomat-klon %d] Otwieranie pipe: %s\n", idx, PIPE_NAME);
+                fflush(stdout);
                 int fd = open(PIPE_NAME, O_RDONLY);
-                char cmd[32] = {0};
-                int ncmd = read(fd, cmd, sizeof(cmd)-1);
-                if (ncmd <= 0) { close(fd); continue; }
+                if (fd < 0) {
+                    printf("[biletomat-klon %d] Błąd otwarcia pipe\n", idx);
+                    fflush(stdout);
+                    sleep(1);
+                    continue;
+                }
+                // Czytaj pakiet: komenda (16 bajtów) + dane
+                struct {
+                    char cmd[16];
+                    pid_t pid;
+                    int prio;
+                    wydzial_t typ;
+                } packet;
+                printf("[biletomat-klon %d] Czytam pakiet...\n", idx);
+                fflush(stdout);
+                int nread = read(fd, &packet, sizeof(packet));
+                printf("[biletomat-klon %d] Przeczytano %d bajtów, cmd='%.16s', PID=%d, prio=%d, typ=%d\n", 
+                       idx, nread, packet.cmd, packet.pid, packet.prio, packet.typ);
+                fflush(stdout);
+                if (nread != sizeof(packet)) { 
+                    printf("[biletomat-klon %d] Błąd: oczekiwano %lu bajtów, otrzymano %d\n", idx, sizeof(packet), nread);
+                    fflush(stdout);
+                    close(fd); 
+                    continue; 
+                }
                 if (zamkniecie_urzedu) { close(fd); break; }
-                if (strncmp(cmd, "ASSIGN_TICKET_TO", 16) == 0) {
-                    struct { pid_t pid; int prio; wydzial_t typ; } req;
-                    int r = read(fd, &req, sizeof(req));
-                    if (r == sizeof(req)) {
-                        if (req.prio >= 100) {
-                            assign_ticket(req.pid, req.prio, req.typ, sem);
-                            printf("[biletomat-klon %d] VIP ticket dla PID %d, typ %d\n", idx, req.pid, req.typ);
-                        } else {
-                            assign_ticket_to(req.pid, req.prio, req.typ, sem);
-                        }
+                if (strncmp(packet.cmd, "ASSIGN_TICKET_TO", 16) == 0) {
+                    if (packet.prio >= 100) {
+                        assign_ticket(packet.pid, packet.prio, packet.typ, sem);
+                        printf("[biletomat-klon %d] VIP ticket dla PID %d, typ %d\n", idx, packet.pid, packet.typ);
+                    } else {
+                        assign_ticket_to(packet.pid, packet.prio, packet.typ, sem);
                     }
-                } else if (strncmp(cmd, "ASSIGN_TICKET", 13) == 0) {
-                    struct { pid_t pid; int prio; wydzial_t typ; } req;
-                    int r = read(fd, &req, sizeof(req));
-                    if (r == sizeof(req)) {
-                        if (ticket_count[req.typ] < MAX_TICKETS) {
-                            assign_ticket(req.pid, req.prio, req.typ, sem);
-                            printf("[biletomat-klon %d] Przydzielono ticket dla PID %d, typ %d\n", idx, req.pid, req.typ);
-                        } else {
-                            printf("[biletomat-klon %d] Brak biletów dla wydziału %d\n", idx, req.typ);
-                        }
+                } else if (strncmp(packet.cmd, "ASSIGN_TICKET", 13) == 0) {
+                    int current = (shm_ticket_count) ? shm_ticket_count[packet.typ] : ticket_count[packet.typ];
+                    if (current < MAX_TICKETS) {
+                        assign_ticket(packet.pid, packet.prio, packet.typ, sem);
+                        printf("[biletomat-klon %d] Przydzielono ticket dla PID %d, typ %d\n", idx, packet.pid, packet.typ);
+                    } else {
+                        printf("[biletomat-klon %d] Brak biletów dla wydziału %d\n", idx, packet.typ);
                     }
                 }
                 close(fd);
@@ -153,7 +203,11 @@ int main() {
 
     while (running) {
         int suma = 0;
-        for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
+        if (shm_ticket_count) {
+            for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += shm_ticket_count[i];
+        } else {
+            for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
+        }
         int N = 60;
         int K = N/3;
         int required_clones = 1;
