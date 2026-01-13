@@ -30,6 +30,7 @@ void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
     ticket_list[typ][idx].PID = pid;
     ticket_list[typ][idx].priorytet = prio;
     ticket_list[typ][idx].typ = typ;
+    printf("[biletomat] Przydzielono ticket (no-sort) id=%d dla PID=%d, wydzial=%d, priorytet=%d\n", idx, pid, typ, prio);
     sem_post(sem);
 }
 
@@ -80,6 +81,7 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem) {
     ticket_list[typ][idx].priorytet = prio;
     ticket_list[typ][idx].typ = typ;
     sort_queue(typ);
+    printf("[biletomat] Przydzielono ticket id=%d dla PID=%d, wydzial=%d, priorytet=%d (posortowano)\n", idx, pid, typ, prio);
     sem_post(sem);
 }
 

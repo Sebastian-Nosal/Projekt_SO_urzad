@@ -9,6 +9,13 @@
 void start_simulation(int liczba_petentow) {
 	printf("[loader] Start symulacji z %d petentami\n", liczba_petentow);
 
+	pid_t dyrektor_pid = fork();
+	if (dyrektor_pid == 0) {
+		execl("./workers/dyrektor/dyrektor", "dyrektor", NULL);
+		perror("execl dyrektor");
+		exit(1);
+	}
+
 	pid_t biletomat_pid = fork();
 	if (biletomat_pid == 0) {
 		execl("./workers/biletomat/biletomat", "biletomat", NULL);
@@ -20,13 +27,6 @@ void start_simulation(int liczba_petentow) {
 	if (kasa_pid == 0) {
 		execl("./workers/kasa/kasa", "kasa", NULL);
 		perror("execl kasa");
-		exit(1);
-	}
-
-	pid_t dyrektor_pid = fork();
-	if (dyrektor_pid == 0) {
-		execl("./workers/dyrektor/dyrektor", "dyrektor", NULL);
-		perror("execl dyrektor");
 		exit(1);
 	}
 

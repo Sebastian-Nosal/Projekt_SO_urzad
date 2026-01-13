@@ -53,6 +53,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < liczba_urzednikow; ++i) {
         urzednicy[i] = (pid_t)atoi(argv[i + 2]);
     }
+    printf("[dyrektor] Wysyłam sygnał %d do %d urzędników\n", sygnal, liczba_urzednikow);
+    for (int i = 0; i < liczba_urzednikow; ++i) printf("[dyrektor] Urzędnik #%d PID=%d\n", i, urzednicy[i]);
     wyslij_sygnal_do_urzednikow(sygnal);
 
     // Sprawdź wyczerpanie urzędników przez shared memory

@@ -25,6 +25,8 @@ void petent_start(PetentData* petent) {
 		strcpy(cmd, "ASSIGN_TICKET_TO");
 	else
 		strcpy(cmd, "ASSIGN_TICKET");
+	// Log taking the ticket
+	printf("[petent] PID=%d pobiera bilet dla wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
 	write(fd, cmd, strlen(cmd));
 	struct { pid_t pid; int prio; wydzial_t typ; } req = { pid, petent->priorytet, petent->typ };
 	write(fd, &req, sizeof(req));
