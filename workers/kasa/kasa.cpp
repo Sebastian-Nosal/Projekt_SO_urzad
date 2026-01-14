@@ -12,20 +12,20 @@ volatile sig_atomic_t running = 1;
 
 void sig_handler(int sig) {
     if (sig == SIGUSR1) {
-        printf("[kasa] Otrzymano SIGUSR1 - kończę pracę.\n");
+        printf("[Kasa -> PID=%d]: Otrzymano SIGUSR1 - konczę pracę\n", getpid());
     }
     running = 0;
 }
 
 void obsluga_kasy() {
     mkfifo(KASA_PIPE, 0666);
-    printf("[kasa] Start pracy, oczekiwanie na żądania przez pipe: %s\n", KASA_PIPE);
+    printf("[Kasa -> PID=%d]: Start pracy, oczekiwanie na żądania przez pipe: %s\n", getpid(), KASA_PIPE);
     while (running) {
         int fd = open(KASA_PIPE, O_RDONLY);
         struct kasa_request req;
         int r = read(fd, &req, sizeof(req));
         if (r == sizeof(req)) {
-            printf("[kasa] Otrzymano żądanie opłaty od PID=%d, kwota=%d\n", req.petent_pid, req.kwota);
+            printf("[Kasa -> PID=%d]: Otrzymano żądanie opłaty od PID=%d, kwota=%d\n", getpid(), req.petent_pid, req.kwota);
             // Symulacja obsługi opłaty
             sleep(1);
             printf("[kasa] Opłata przyjęta od PID=%d\n", req.petent_pid);

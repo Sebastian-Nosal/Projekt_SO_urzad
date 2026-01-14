@@ -11,12 +11,17 @@
 
 volatile sig_atomic_t zamkniecie_urzedu = 0;
 
-void sigusr2_handler(int sig) { zamkniecie_urzedu = 1; }
+// SIGUSR2: dyrektor zamyka urząd
+void sigusr2_handler(int sig) {
+	pid_t pid = getpid();
+	printf("[Petent -> PID=%d]: Jestem sfrustrowany\n", pid);
+	_exit(0);
+}
 
-// SIGUSR1: petent jest obsługiwany przez urzędnika
+// SIGUSR1: petent jest obsługiwany przez urzędnika - sprawa załatwiona
 void sigusr1_handler(int sig) {
 	pid_t pid = getpid();
-	printf("[petent] PID=%d obsługiwany przez urzędnika\n", pid);
+	printf("[Petent -> PID=%d]: Sprawa Zalatowiona\n", pid);
 	_exit(0);
 }
 
@@ -52,10 +57,10 @@ void petent_start(PetentData* petent) {
 	packet.typ = petent->typ;
 	
 	// Log taking the ticket
-	printf("[petent] PID=%d pobiera bilet dla wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
+	printf("[Petent -> PID=%d]: Pobiera bilet dla wydzialu %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
 	(void)write(fd, &packet, sizeof(packet));
 	close(fd);
-	printf("[petent] PID=%d zgłosił się do wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
+	printf("[Petent -> PID=%d]: Zgloszył się do wydziału %d, priorytet=%d%s\n", pid, petent->typ, petent->priorytet, petent->isVIP ? " (VIP)" : "");
 }
 
 int main(int argc, char* argv[]) {
@@ -72,9 +77,9 @@ int main(int argc, char* argv[]) {
 	signal(SIGTERM, sigterm_handler);
 	signal(SIGUSR1, sigusr1_handler);
 	petent_start(&petent);
-	// Oczekiwanie na obsługę lub zamknięcie urzędu
+	// Oczekiwanie na obsługę lub zamknięcie urzędu - użyj pause() aby czekać na sygnał
 	while (!zamkniecie_urzedu) {
-		sleep(1);
+		pause();  // Czekaj na sygnał
 	}
 	printf("[petent] PID=%d opuszcza urząd (zamknięcie)\n", getpid());
 	return 0;

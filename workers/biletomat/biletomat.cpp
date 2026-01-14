@@ -32,7 +32,7 @@ int* shm_ticket_count = NULL;
 
 void sig_handler(int sig) {
     if (sig == SIGUSR1) {
-        printf("[biletomat] Otrzymano SIGUSR1 - kończę pracę.\n");
+        printf("[Biletomat -> PID=%d]: Otrzymano SIGUSR1 - konczę pracę\n", getpid());
         running = 0;
     } else {
         running = 0;
@@ -60,7 +60,7 @@ void cleanup() {
     sem_unlink(SEM_NAME);
     unlink(PIPE_NAME);
     shm_unlink(SHM_NAME);
-    printf("[biletomat] Zasoby posprzątane.\n");
+    printf("[Biletomat -> PID=%d]: Zasoby posprzątane\n", getpid());
 }
 
 void sort_queue(wydzial_t typ) {
@@ -136,25 +136,27 @@ int main() {
     }
     sem = sem_open(SEM_NAME, O_CREAT, 0666, 1);
 
-    printf("[biletomat] Oczekiwanie na żądania: %s\n", PIPE_NAME);
+    printf("[Biletomat -> PID=%d]: Oczekiwanie na żądania: %s\n", getpid(), PIPE_NAME);
     pid_t biletomat_clones[3] = {0};
     int active_clones = 1;
 
     auto spawn_clone = [](int idx) -> pid_t {
         pid_t pid = fork();
         if (pid == 0) {
-            printf("[biletomat-klon %d] Uruchomiony, czekam na żądania...\n", idx);
+            printf("[Biletomat-klon -> PID=%d]: Uruchomiony, czekam na żądania\n", getpid());
+            printf("[Biletomat-klon -> PID=%d]: Otwieranie FIFO: %s\n", getpid(), PIPE_NAME);
             fflush(stdout);
-            while (running) {
-                printf("[biletomat-klon %d] Otwieranie pipe: %s\n", idx, PIPE_NAME);
+            // Otwórz FIFO raz na początku w trybie do czytania
+            int fd = open(PIPE_NAME, O_RDONLY);
+            if (fd < 0) {
+                printf("[Biletomat-klon -> PID=%d]: Blad otwarcia pipe: %s\n", getpid(), PIPE_NAME);
                 fflush(stdout);
-                int fd = open(PIPE_NAME, O_RDONLY);
-                if (fd < 0) {
-                    printf("[biletomat-klon %d] Błąd otwarcia pipe\n", idx);
-                    fflush(stdout);
-                    sleep(1);
-                    continue;
-                }
+                exit(1);
+            }
+            printf("[Biletomat-klon -> PID=%d]: FIFO otwarte, czekam na żądania\n", getpid());
+            fflush(stdout);
+            
+            while (running) {
                 // Czytaj pakiet: komenda (16 bajtów) + dane
                 struct {
                     char cmd[16];
@@ -162,19 +164,38 @@ int main() {
                     int prio;
                     wydzial_t typ;
                 } packet;
-                printf("[biletomat-klon %d] Czytam pakiet...\n", idx);
-                fflush(stdout);
+                
                 int nread = read(fd, &packet, sizeof(packet));
+                printf("[Biletomat-klon -> PID=%d]: read() zwróci %d bajtów\n", getpid(), nread);
+                fflush(stdout);
+                
+                // EOF oznacza, że wszyscy pisarze zamknęli FIFO
+                if (nread == 0) {
+                    printf("[Biletomat-klon -> PID=%d]: EOF na pipe, ponownie otwieranie\n", getpid());
+                    fflush(stdout);
+                    close(fd);
+                    sleep(1);
+                    fd = open(PIPE_NAME, O_RDONLY);
+                    if (fd < 0) {
+                        printf("[Biletomat-klon -> PID=%d]: Błąd ponownego otwarcia pipe\n", getpid());
+                        fflush(stdout);
+                        break;
+                    }
+                    continue;
+                }
+                
+                if (nread != (int)sizeof(packet)) { 
+                    printf("[Biletomat-klon -> PID=%d]: Blad: oczekiwano %lu bajtów, otrzymano %d\n", getpid(), sizeof(packet), nread);
+                    fflush(stdout);
+                    continue; 
+                }
+                
                 printf("[biletomat-klon %d] Przeczytano %d bajtów, cmd='%.16s', PID=%d, prio=%d, typ=%d\n", 
                        idx, nread, packet.cmd, packet.pid, packet.prio, packet.typ);
                 fflush(stdout);
-                if (nread != sizeof(packet)) { 
-                    printf("[biletomat-klon %d] Błąd: oczekiwano %lu bajtów, otrzymano %d\n", idx, sizeof(packet), nread);
-                    fflush(stdout);
-                    close(fd); 
-                    continue; 
-                }
-                if (zamkniecie_urzedu) { close(fd); break; }
+                
+                if (zamkniecie_urzedu) { break; }
+                
                 if (strncmp(packet.cmd, "ASSIGN_TICKET_TO", 16) == 0) {
                     if (packet.prio >= 100) {
                         assign_ticket(packet.pid, packet.prio, packet.typ, sem);
@@ -191,8 +212,8 @@ int main() {
                         printf("[biletomat-klon %d] Brak biletów dla wydziału %d\n", idx, packet.typ);
                     }
                 }
-                close(fd);
             }
+            close(fd);
             exit(0);
         }
         return pid;
@@ -200,6 +221,8 @@ int main() {
 
     biletomat_clones[0] = spawn_clone(0);
     active_clones = 1;
+    
+    int zero_tickets_count = 0;  // Licznik iteracji z zerowymi biletami
 
     while (running) {
         int suma = 0;
@@ -208,6 +231,20 @@ int main() {
         } else {
             for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
         }
+        
+        // Sprawdzenie czy bilety się wyczerpały
+        if (suma == 0) {
+            zero_tickets_count++;
+            if (zero_tickets_count >= 10) {  // Przez 10 iteracji brak biletów = wyczerpane
+                printf("[Biletomat -> PID=%d]: Bilety wyczerpane\n", getpid());
+                printf("[Biletomat -> PID=%d]: Koniec pracy biletomatu\n", getpid());
+                running = 0;
+                break;
+            }
+        } else {
+            zero_tickets_count = 0;  // Reset licznika jeśli pojawiły się bilety
+        }
+        
         int N = 60;
         int K = N/3;
         int required_clones = 1;
@@ -216,12 +253,12 @@ int main() {
 
         for (int i = active_clones; i < required_clones; ++i) {
             biletomat_clones[i] = spawn_clone(i);
-            printf("[biletomat] Uruchomiono  #%d PID=%d\n", i, biletomat_clones[i]);
+            printf("[Biletomat -> PID=%d]: Uruchomiono klon #%d PID=%d\n", getpid(), i, biletomat_clones[i]);
         }
         for (int i = required_clones; i < active_clones; ++i) {
             if (biletomat_clones[i] > 0) {
                 kill(biletomat_clones[i], SIGTERM);
-                printf("[biletomat] Zatrzymano #%d PID=%d\n", i, biletomat_clones[i]);
+                printf("[Biletomat -> PID=%d]: Zatrzymano klon #%d PID=%d\n", getpid(), i, biletomat_clones[i]);
                 biletomat_clones[i] = 0;
             }
         }
@@ -233,6 +270,26 @@ int main() {
     for (int i = 0; i < active_clones; ++i) {
         if (biletomat_clones[i] > 0) kill(biletomat_clones[i], SIGTERM);
     }
+    
+    // Odpraw wszystkich petentów czekających na bilet
+    printf("[Biletomat -> PID=%d]: Odprawianie wszystkich czekających petentów...\n", getpid());
+    sem_wait(sem);
+    int total_dismissed = 0;
+    for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
+        for (int i = 0; i < ticket_count[wydzial]; ++i) {
+            pid_t petent_pid = ticket_list[wydzial][i].PID;
+            if (petent_pid > 0) {
+                kill(petent_pid, SIGTERM);
+                printf("[Biletomat -> PID=%d]: Odprawienie petenta PID=%d (wydział %d)\n", getpid(), petent_pid, wydzial);
+                total_dismissed++;
+            }
+        }
+    }
+    sem_post(sem);
+    if (total_dismissed > 0) {
+        printf("[Biletomat -> PID=%d]: Odprawiono %d petentów\n", getpid(), total_dismissed);
+    }
+    
     cleanup();
     return 0;
 }

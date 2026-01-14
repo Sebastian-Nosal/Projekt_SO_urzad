@@ -28,7 +28,31 @@ int main() {
 	// Zainstaluj handler przed uruchomieniem symulacji; handler użyje globalnych zmiennych
 	signal(SIGINT, sigint_bridge);
 
-	int total_petents = PETENT_AMOUNT;
+	// Pobierz maksymalny limit procesów
+	int max_processes = get_process_limit();
+	std::cout << "[main] Maksymalny limit procesów dla użytkownika: " << max_processes << std::endl;
+	
+	// Oblicz softcap: 20 mniej niż limit
+	// Całkowite procesy: dyrektor (1) + biletomat (1) + kasa (1) + 10 urzędników + petenci
+	int base_processes = 1 + 1 + 1 + 10; // 13 procesów bazowych
+	int softcap = max_processes - base_processes - 20;
+	if (softcap < 1) softcap = 1;
+	
+	std::cout << "[main] Maksymalnie petentów do uruchomienia (softcap): " << softcap << std::endl;
+	
+	// Wczytaj ilość petentów od użytkownika
+	int total_petents;
+	std::cout << "[main] Podaj ilość petentów (domyślnie " << PETENT_AMOUNT << "): ";
+	std::cin >> total_petents;
+	
+	// Sprawdzenie czy podana wartość przekracza limit
+	if (total_petents > softcap) {
+		std::cout << "[main] OSTRZEŻENIE: Podana ilość " << total_petents << " petentów przekracza softcap " << softcap << "!" << std::endl;
+		std::cout << "[main] Ograniczam do " << softcap << " petentów." << std::endl;
+		total_petents = softcap;
+	}
+	
+	std::cout << "[main] Uruchamianie symulacji z " << total_petents << " petentami..." << std::endl;
 	start_simulation(total_petents);
 	std::cout << "[main] Wszystkie procesy zakończone." << std::endl;
 	std::cout << "[main] Koniec działania." << std::endl;

@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <csignal>
 #include <time.h>
 
@@ -11,6 +12,26 @@
 // Definicje globalnych zmiennych zadeklarowanych w headers/loader.h
 volatile pid_t g_dyrektor_pid = 0;
 volatile sig_atomic_t g_pending_sigint = 0;
+
+// Funkcja do pobrania maksymalnej liczby procesów dla bieżącego użytkownika
+int get_process_limit() {
+	struct rlimit limit;
+	if (getrlimit(RLIMIT_NPROC, &limit) == 0) {
+		printf("[loader] Limit procesów dla użytkownika: %lu\n", limit.rlim_cur);
+		return (int)limit.rlim_cur;
+	}
+	// Fallback: próba przeczytania z /proc/sys/kernel/pid_max
+	int global_limit = 1024;
+	FILE* fp = fopen("/proc/sys/kernel/pid_max", "r");
+	if (fp) {
+		if (fscanf(fp, "%d", &global_limit) != 1) {
+			// Ignoruj błąd fscanf
+		}
+		fclose(fp);
+		printf("[loader] Nie można odczytać limitu użytkownika, używam globalnego: %d\n", global_limit);
+	}
+	return global_limit;
+}
 
 // Globalne PIDs do zarządzania
 pid_t* g_all_pids = NULL;
@@ -34,9 +55,8 @@ void sigusr1_shutdown_handler(int sig) {
 }
 
 void start_simulation(int liczba_petentow) {
-	printf("[loader] Start symulacji z %d petentami\n", liczba_petentow);
+	printf("[Loader -> PID=%d]: Start symulacji z %d petentami\n", getpid(), liczba_petentow);
 
-	// Alokuj miejsce na wszystkie PIDs
 	g_all_pids_count = 0;
 	g_all_pids = (pid_t*) malloc(sizeof(pid_t) * (1 + 1 + 1 + 10 + liczba_petentow)); // dyrektor + biletomat + kasa + urzednicy + petenci
 
@@ -121,22 +141,27 @@ void start_simulation(int liczba_petentow) {
 	signal(SIGUSR1, sigusr1_shutdown_handler);
 
 	// Czekaj na wszystkie procesy z monitorowaniem petentów
-	printf("[loader] Oczekiwanie na procesy. Będę sprawdzać liczbę żywych petentów co 10 sekund.\n");
+	printf("[Loader -> PID=%d]: Oczekiwanie na procesy. Będę sprawdzać liczbę żywych petentów co 2 sekundy\n", getpid());
 	int petents_alive = allowed_count;
 	time_t last_check = time(NULL);
 	int all_done = 0;
 	
 	while (!all_done) {
-		// Sprawdzaj co 10 sekund ile petentów jeszcze żyje
+		// Sprawdzaj co 2 sekundy ile petentów jeszcze żyje
 		time_t now = time(NULL);
-		if (now - last_check >= 10) {
+		if (now - last_check >= 2) {
 			petents_alive = 0;
 			for (int i = 0; i < allowed_count; ++i) {
-				if (kill(allowed_petents[i], 0) == 0) {
+				if (allowed_petents[i] > 0 && kill(allowed_petents[i], 0) == 0) {
 					petents_alive++;
 				}
 			}
-			printf("[loader] Petenci wciąż czekający: %d/%d\n", petents_alive, allowed_count);
+			printf("[Loader -> PID=%d]: Petenci wciąż czekający: %d/%d\n", getpid(), petents_alive, allowed_count);
+			if (petents_alive == 0) {
+				printf("[Loader -> PID=%d]: Wszyscy petenci zostali obsłużeni lub odprawieni.\n", getpid());
+				all_done = 1;
+				break;
+			}
 			last_check = now;
 		}
 		
@@ -146,6 +171,48 @@ void start_simulation(int liczba_petentow) {
 			if (waitpid(urzednik_pids[i], NULL, WNOHANG) > 0) {
 				urzednik_pids[i] = -1;
 				urzednicy_done++;
+			}
+		}
+		
+		// Sprawdzaj czy wszyscy urzędnicy się skończyli
+		int all_urzednicy_done = 1;
+		for (int i = 0; i < urzednik_count; ++i) {
+			if (urzednik_pids[i] > 0) { all_urzednicy_done = 0; break; }
+		}
+		
+		// Gdy ostatni urzędnik się skończy, wyślij SIGTERM do pozostałych petentów (nie da się ich obsłużyć)
+		static int urzednicy_finished_signaled = 0;
+		if (all_urzednicy_done && !urzednicy_finished_signaled) {
+			printf("[Loader -> PID=%d]: Wszyscy urzednicy skonczyli prace! Wysyłam SIGTERM do czekających petentów...\n", getpid());
+			int remaining = 0;
+			for (int i = 0; i < allowed_count; ++i) {
+				if (allowed_petents[i] > 0) {
+					kill(allowed_petents[i], SIGTERM);
+					remaining++;
+				}
+			}
+			printf("[Loader -> PID=%d]: Odprawiono %d petentów (urzędnicy się skończyli)\n", getpid(), remaining);
+			urzednicy_finished_signaled = 1;
+		}
+		
+		// Jeśli urzędnicy się skończyli i upłynęło trochę czasu, wyślij SIGKILL do petentów którzy wciąż żyją
+		static int sigkill_sent = 0;
+		static time_t sigterm_time = 0;
+		if (urzednicy_finished_signaled && !sigkill_sent) {
+			if (sigterm_time == 0) sigterm_time = time(NULL);
+			if (time(NULL) - sigterm_time >= 3) {  // Po 3 sekundach wyślij SIGKILL
+				int still_alive = 0;
+				for (int i = 0; i < allowed_count; ++i) {
+					if (allowed_petents[i] > 0 && kill(allowed_petents[i], 0) == 0) {
+						printf("[Loader -> PID=%d]: SIGKILL dla petenta PID=%d (nie odpowiedział na SIGTERM)\n", getpid(), allowed_petents[i]);
+						kill(allowed_petents[i], SIGKILL);
+						still_alive++;
+					}
+				}
+				if (still_alive > 0) {
+					printf("[Loader -> PID=%d]: Wysłano SIGKILL do %d petentów\n", getpid(), still_alive);
+				}
+				sigkill_sent = 1;
 			}
 		}
 		

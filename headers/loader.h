@@ -3,6 +3,7 @@
 
 #include "../config.h"
 
+int get_process_limit();
 void start_simulation(int liczba_petentow);
 #include <csignal>
 
