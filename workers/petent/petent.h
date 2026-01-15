@@ -10,6 +10,7 @@ typedef struct {
 	int priorytet;
 	int isVIP;
 	int isInside;
+	int hasChild;
 } PetentData;
 
 // Funkcje obsługi petenta

@@ -63,9 +63,9 @@ int main(int argc, char* argv[]) {
         int _ft = ftruncate(shm_fd_exhaust, sizeof(int) * WYDZIAL_COUNT);
         if (_ft == -1) perror("ftruncate URZEDNIK_EXHAUST_SHM");
     }
-    int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
-    if (urzednik_exhausted == MAP_FAILED) { perror("mmap urzednik_exhausted"); return 1; }
-    urzednik_exhausted[typ] = 0;
+    int* urzednik_wyczerpanie = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
+    if (urzednik_wyczerpanie == MAP_FAILED) { perror("mmap urzednik_wyczerpanie"); return 1; }
+    urzednik_wyczerpanie[typ] = 0;
     int shm_fd = -1;
     for (int attempt = 0; attempt < 10; ++attempt) {
         shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
@@ -73,7 +73,12 @@ int main(int argc, char* argv[]) {
         sleep(1);
     }
     if (shm_fd < 0) { perror("shm_open SHM_NAME"); return 1; }
-    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + WYDZIAL_COUNT * sizeof(int);
+    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + 
+                      WYDZIAL_COUNT * sizeof(int) + 
+                      sizeof(struct waiting_petent) * MAX_WAITING +
+                      WYDZIAL_COUNT * sizeof(int) +
+                      WYDZIAL_COUNT * sizeof(int) +
+                      sizeof(int) * 2;
     void* shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     char* base = (char*)shm_ptr;
     struct ticket* ticket_list[WYDZIAL_COUNT];
@@ -97,14 +102,14 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (raport != stdout) setvbuf(raport, NULL, _IONBF, 0);
 
-    int obsluzone = 0;  // Licznik obsłużonych osób
+    int obsluzone = 0; 
     printf("[Urzędnik PID=%d, typ=%d]: Start wydziału %d, limit: %d\n", getpid(), typ, licznik);
     fprintf(raport, "[Urzędnik PID=%d, typ=%d]: Start wydziału %d, limit: %d\n", getpid(), typ, licznik);
     fflush(raport);
     while (1) {
         if (licznik <= 0) {
-            if (!urzednik_exhausted[typ]) {
-                urzednik_exhausted[typ] = 1;
+            if (!urzednik_wyczerpanie[typ]) {
+                urzednik_wyczerpanie[typ] = 1;
                 printf("[Urzędnik PID=%d, typ=%d]: Wyczerpany (limit wyczerpany)\n", getpid(), typ);
                 sem_wait(sem);
                 int pending = ticket_count[typ];
@@ -131,7 +136,6 @@ int main(int argc, char* argv[]) {
                 struct ticket t = ticket_list[typ][0];
                 for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
                 ticket_count[typ]--;
-                // Najpierw loguj, flushuj, potem powiadom petenta, że jest obsługiwany
                 fprintf(raport, "[Urzędnik %d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
                 printf("[Urzędnik PID=%d, typ=%d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
                 fflush(raport);
@@ -166,7 +170,6 @@ int main(int argc, char* argv[]) {
         for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
         ticket_count[typ]--;
         sem_post(sem);
-        // Najpierw loguj, flushuj, potem obsługiwanie
         fprintf(raport, "[Urzędnik %d] Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
         printf("[Urzędnik PID=%d, typ=%d]: Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
         fflush(raport);
@@ -178,7 +181,7 @@ int main(int argc, char* argv[]) {
                 fprintf(raport, "[Urzędnik SA] Sprawa załatwiona dla PID=%d\n", t.PID);
                 printf("[Urzędnik PID=%d, typ=%d]: Sprawa załatwiona dla PID=%d\n", getpid(), typ, t.PID);
                 fflush(stdout);
-                kill(t.PID, SIGUSR1);  // Wysyłaj SIGUSR1 tylko gdy sprawa załatwiona
+                kill(t.PID, SIGUSR1);
                 licznik--;
                 obsluzone++;
                 printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
@@ -187,8 +190,7 @@ int main(int argc, char* argv[]) {
                 wydzial_t cel = random_sa_target();
                 int cel_limit = get_limit(cel);
                 
-                // Sprawdź czy docelowy wydział nie jest już wyczerpany
-                if (urzednik_exhausted[cel]) {
+                if (urzednik_wyczerpanie[cel]) {
                     fprintf(raport, "[Urzędnik SA] Wydział %d jest już wyczerpany - ODPRAWIENIE PID=%d\n", cel, t.PID);
                     printf("[Urzędnik PID=%d, typ=%d]: Wydział %d jest wyczerpany - odprawianie PID=%d\n", getpid(), typ, cel, t.PID);
                     obsluzone++;
@@ -198,7 +200,8 @@ int main(int argc, char* argv[]) {
                     sem_wait(sem);
                     int cel_n = ticket_count[cel];
                     sem_post(sem);
-                    if (cel_n < cel_limit) {
+                    // Pozwól na przekierowanie jeśli jest jakiekolwiek miejsce w kolejce (do MAX_TICKETS)
+                    if (cel_n < MAX_TICKETS) {
                         fprintf(raport, "[Urzędnik SA] Przekierowuje PID=%d do wydziału %d\n", t.PID, cel);
                         printf("[Urzędnik PID=%d, typ=%d]: Przekierowuje PID=%d do wydziału %d\n", getpid(), typ, t.PID, cel);
                         sem_wait(sem);
@@ -210,7 +213,6 @@ int main(int argc, char* argv[]) {
                     } else {
                         fprintf(raport, "[Urzędnik SA] BRAK MIEJSC w wydziale %d dla PID=%d, raport NIEPRZYJĘTY\n", cel, t.PID);
                         printf("[Urzędnik PID=%d, typ=%d]: BRAK MIEJSC w wydziale %d dla PID=%d\n", getpid(), typ, cel, t.PID);
-                        // Gdy brak miejsc w wydziale, odpraw petenta
                         obsluzone++;
                         kill(t.PID, SIGTERM);
                         fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
@@ -228,7 +230,7 @@ int main(int argc, char* argv[]) {
                 fprintf(raport, "[Urzędnik %d] Sprawa załatwiona dla PID=%d\n", typ, t.PID);
                 printf("[Urzędnik PID=%d, typ=%d]: Sprawa załatwiona dla PID=%d\n", getpid(), typ, t.PID);
                 fflush(stdout);
-                kill(t.PID, SIGUSR1);  // Wysyłaj SIGUSR1 tylko gdy sprawa załatwiona
+                kill(t.PID, SIGUSR1);
                 licznik--;
                 obsluzone++;
                 printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
@@ -239,6 +241,17 @@ int main(int argc, char* argv[]) {
         sleep(1);
     }
     fclose(raport);
+    
+    // Sygnalizuj biletomatu że ten wydział się skończył
+    printf("[Urzędnik PID=%d, typ=%d]: Zamykam wydział - sygnalizuję biletomatu\n", getpid(), typ);
+    
+    // Oznacz wydział jako zamknięty w SHM
+    int* wydzial_closed = (int*)(base + WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + 
+                                  WYDZIAL_COUNT * sizeof(int) + 
+                                  sizeof(struct waiting_petent) * MAX_WAITING + 
+                                  WYDZIAL_COUNT * sizeof(int));
+    wydzial_closed[typ] = 1;
+    
     munmap(shm_ptr, shm_size);
     close(shm_fd);
     sem_close(sem);

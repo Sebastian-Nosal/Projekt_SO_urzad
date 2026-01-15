@@ -79,7 +79,9 @@ void start_simulation(int liczba_petentow) {
 
 	pid_t biletomat_pid = fork();
 	if (biletomat_pid == 0) {
-		execl("./workers/biletomat/biletomat", "biletomat", NULL);
+		char n_str[16];
+		snprintf(n_str, sizeof(n_str), "%d", liczba_petentow);
+		execl("./workers/biletomat/biletomat", "biletomat", n_str, NULL);
 		perror("execl biletomat");
 		exit(1);
 	}
@@ -200,7 +202,7 @@ void start_simulation(int liczba_petentow) {
 		static time_t sigterm_time = 0;
 		if (urzednicy_finished_signaled && !sigkill_sent) {
 			if (sigterm_time == 0) sigterm_time = time(NULL);
-			if (time(NULL) - sigterm_time >= 3) {  // Po 3 sekundach wyślij SIGKILL
+			if (time(NULL) - sigterm_time >= 1) {  // Po 1 sekundzie wyślij SIGKILL
 				int still_alive = 0;
 				for (int i = 0; i < allowed_count; ++i) {
 					if (allowed_petents[i] > 0 && kill(allowed_petents[i], 0) == 0) {
@@ -238,6 +240,21 @@ void start_simulation(int liczba_petentow) {
 		
 		if (!all_done) sleep(1);
 	}
+	
+	// CZEKAJ BLOKOWO AŻ BILETOMAT SIĘ CAŁKOWICIE SKOŃCZY (posprzątanie zasobów)
+	printf("[Loader -> PID=%d]: Czekam na biletomat (posprzątanie zasobów)...\n", getpid());
+	waitpid(biletomat_pid, NULL, 0);  // Blokowy wait
+	printf("[Loader -> PID=%d]: Biletomat się skończył i posprzątał zasoby\n", getpid());
+	
+	// Czekaj na kaszę
+	printf("[Loader -> PID=%d]: Czekam na kasę...\n", getpid());
+	waitpid(kasa_pid, NULL, 0);  // Blokowy wait
+	printf("[Loader -> PID=%d]: Kasa się skończyła\n", getpid());
+	
+	// Czekaj na dyrektora
+	printf("[Loader -> PID=%d]: Czekam na dyrektora...\n", getpid());
+	waitpid(dyrektor_pid, NULL, 0);  // Blokowy wait
+	printf("[Loader -> PID=%d]: Dyrektor się skończył\n", getpid());
 	
 	printf("[loader] Symulacja zakończona\n");
 	
