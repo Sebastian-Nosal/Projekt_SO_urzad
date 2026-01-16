@@ -21,16 +21,23 @@ void obsluga_kasy() {
     mkfifo(KASA_PIPE, 0666);
     printf("[Kasa -> PID=%d]: Start pracy, oczekiwanie na żądania przez pipe: %s\n", getpid(), KASA_PIPE);
     while (running) {
-        int fd = open(KASA_PIPE, O_RDONLY);
-        struct kasa_request req;
-        int r = read(fd, &req, sizeof(req));
-        if (r == sizeof(req)) {
-            printf("[Kasa -> PID=%d]: Otrzymano żądanie opłaty od PID=%d, kwota=%d\n", getpid(), req.petent_pid, req.kwota);
-            // Symulacja obsługi opłaty
-            sleep(1);
-            printf("[kasa] Opłata przyjęta od PID=%d\n", req.petent_pid);
+        // Otwórz pipe w trybie non-blocking, aby mógł się wybudzić na sygnały
+        int fd = open(KASA_PIPE, O_RDONLY | O_NONBLOCK);
+        if (fd >= 0) {
+            struct kasa_request req;
+            int r = read(fd, &req, sizeof(req));
+            if (r == sizeof(req)) {
+                printf("[Kasa -> PID=%d]: Otrzymano żądanie opłaty od PID=%d, kwota=%d\n", getpid(), req.petent_pid, req.kwota);
+                // Symulacja obsługi opłaty
+                sleep(1);
+                printf("[kasa] Opłata przyjęta od PID=%d\n", req.petent_pid);
+                printf("[kasa] Petent przyszedł do kasy (PID=%d)\n", req.petent_pid);
+                fflush(stdout);
+            }
+            close(fd);
         }
-        close(fd);
+        // Krótka pauza, aby znowu sprawdzić sygnały
+        sleep(1);
     }
     unlink(KASA_PIPE);
     printf("[kasa] Zakończono pracę.\n");

@@ -1,19 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <semaphore.h>
-// Rewritten clean implementation of biletomat
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -22,6 +9,7 @@
 #include <semaphore.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <errno.h>
 #include "biletomat.h"
 
 extern volatile sig_atomic_t running;
@@ -29,6 +17,42 @@ extern volatile sig_atomic_t zamkniecie_urzedu;
 
 // Wskaźnik do tablicy liczników biletek w pamięci współdzielonej
 int* shm_ticket_count = NULL;
+
+static int g_building_capacity_announced = 0;
+
+static int count_active_in_tickets() {
+    int total = 0;
+    for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
+        int n = (shm_ticket_count) ? shm_ticket_count[wydzial] : ticket_count[wydzial];
+        for (int i = 0; i < n; ++i) {
+            if (ticket_list[wydzial][i].PID > 0) total++;
+        }
+    }
+    return total;
+}
+
+static void remove_pid_from_tickets_locked(pid_t pid) {
+    for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
+        int* counts = (shm_ticket_count) ? shm_ticket_count : ticket_count;
+        int n = counts[wydzial];
+        struct ticket* list = ticket_list[wydzial];
+        for (int i = 0; i < n; ++i) {
+            if (list[i].PID != pid) continue;
+
+            for (int j = i + 1; j < n; ++j) {
+                list[j - 1] = list[j];
+            }
+            // Wyzeruj ostatni slot po przesunięciu.
+            if (n - 1 >= 0) {
+                memset(&list[n - 1], 0, sizeof(struct ticket));
+                list[n - 1].typ = (wydzial_t)wydzial;
+            }
+            counts[wydzial] = n - 1;
+            if (shm_ticket_count) ticket_count[wydzial] = shm_ticket_count[wydzial];
+            return;
+        }
+    }
+}
 
 void sig_handler(int sig) {
     if (sig == SIGUSR1) {
@@ -88,22 +112,7 @@ void sort_queue(wydzial_t typ) {
 
 void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem, sem_t* sem_ticket_sig = nullptr) {
     sem_wait(sem);
-    
-    // Sprawdź czy jest miejsce w budynku
-    if (*people_inside_ptr >= BUILDING_CAPACITY) {
-        // Brak miejsca - dodaj do listy oczekujących
-        printf("[biletomat] BRAK MIEJSCA w urzedzie dla petenta PID=%d (wydzial=%d). Musi czekać. Oczekujących: %d\n", pid, typ, *waiting_count_ptr);
-        if (*waiting_count_ptr < MAX_WAITING) {
-            waiting_list[*waiting_count_ptr].pid = pid;
-            waiting_list[*waiting_count_ptr].prio = prio;
-            waiting_list[*waiting_count_ptr].typ = typ;
-            waiting_list[*waiting_count_ptr].used = 1;
-            (*waiting_count_ptr)++;
-        }
-        sem_post(sem);
-        return;
-    }
-    
+
     // Jest miejsce - wyślij bilet
     int idx = 0;
     if (shm_ticket_count) {
@@ -117,9 +126,15 @@ void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem, sem_t* sem
     ticket_list[typ][idx].priorytet = prio;
     ticket_list[typ][idx].typ = typ;
     if (shm_ticket_count) shm_ticket_count[typ] = ticket_count[typ];
-    (*people_inside_ptr)++;
     int queue_size = (shm_ticket_count) ? shm_ticket_count[typ] : ticket_count[typ];
-    printf("[biletomat] Przydzielono ticket (no-sort) id=%d dla PID=%d, wydzial=%d, priorytet=%d, pozycja w kolejce: %d, osób w budynku: %d\n", idx, pid, typ, prio, queue_size, *people_inside_ptr);
+
+    int active = count_active_in_tickets();
+    if (!g_building_capacity_announced && active > BUILDING_CAPACITY) {
+        printf("[Biletomat -> PID=%d]: Przekroczono pojemność budynku (%d). Pozostali czekają na zewnątrz.\n", getpid(), BUILDING_CAPACITY);
+        g_building_capacity_announced = 1;
+    }
+
+    printf("[biletomat] Przydzielono ticket (no-sort) id=%d dla PID=%d, wydzial=%d, priorytet=%d, pozycja w kolejce: %d\n", idx, pid, typ, prio, queue_size);
     sem_post(sem);
     sem_t* sig = (sem_ticket_sig) ? sem_ticket_sig : sem_ticket_assigned;
     if (sig && sig != SEM_FAILED) sem_post(sig);  // Sygnalizuj że bilet przydzielony
@@ -127,22 +142,7 @@ void assign_ticket_to(pid_t pid, int prio, wydzial_t typ, sem_t* sem, sem_t* sem
 
 void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem, sem_t* sem_ticket_sig = nullptr) {
     sem_wait(sem);
-    
-    // Sprawdź czy jest miejsce w budynku
-    if (*people_inside_ptr >= BUILDING_CAPACITY) {
-        // Brak miejsca - dodaj do listy oczekujących
-        printf("[biletomat] BRAK MIEJSCA w urzedzie dla petenta PID=%d (wydzial=%d). Musi czekać. Oczekujących: %d\n", pid, typ, *waiting_count_ptr);
-        if (*waiting_count_ptr < MAX_WAITING) {
-            waiting_list[*waiting_count_ptr].pid = pid;
-            waiting_list[*waiting_count_ptr].prio = prio;
-            waiting_list[*waiting_count_ptr].typ = typ;
-            waiting_list[*waiting_count_ptr].used = 1;
-            (*waiting_count_ptr)++;
-        }
-        sem_post(sem);
-        return;
-    }
-    
+
     // Jest miejsce - wyślij bilet
     int idx = 0;
     if (shm_ticket_count) {
@@ -157,9 +157,15 @@ void assign_ticket(pid_t pid, int prio, wydzial_t typ, sem_t* sem, sem_t* sem_ti
     ticket_list[typ][idx].typ = typ;
     if (shm_ticket_count) shm_ticket_count[typ] = ticket_count[typ];
     sort_queue(typ);
-    (*people_inside_ptr)++;
     int queue_size = (shm_ticket_count) ? shm_ticket_count[typ] : ticket_count[typ];
-    printf("[biletomat] Przydzielono ticket id=%d dla PID=%d, wydzial=%d, priorytet=%d (posortowano), pozycja w kolejce: %d, osób w budynku: %d\n", idx, pid, typ, prio, queue_size, *people_inside_ptr);
+
+    int active = count_active_in_tickets();
+    if (!g_building_capacity_announced && active > BUILDING_CAPACITY) {
+        printf("[Biletomat -> PID=%d]: Przekroczono pojemność budynku (%d). Pozostali czekają na zewnątrz.\n", getpid(), BUILDING_CAPACITY);
+        g_building_capacity_announced = 1;
+    }
+
+    printf("[biletomat] Przydzielono ticket id=%d dla PID=%d, wydzial=%d, priorytet=%d (posortowano), pozycja w kolejce: %d\n", idx, pid, typ, prio, queue_size);
     sem_post(sem);
     sem_t* sig = (sem_ticket_sig) ? sem_ticket_sig : sem_ticket_assigned;
     if (sig && sig != SEM_FAILED) sem_post(sig);  // Sygnalizuj że bilet przydzielony
@@ -233,13 +239,11 @@ int main(int argc, char* argv[]) {
             printf("[Biletomat-klon -> PID=%d]: Otwieranie FIFO: %s\n", getpid(), PIPE_NAME);
             fflush(stdout);
             
-            // Otwórz semafor dla sygnalizacji przydzielonego biletu
-            sem_t* sem_clone_assigned = sem_open(SEM_TICKET_ASSIGNED, 0);
-            
             // Otwórz semafor dla dostępu do SHM
             sem_t* sem_clone = sem_open(SEM_NAME, 0);
-            // Otwórz FIFO raz na początku w trybie do czytania
-            int fd = open(PIPE_NAME, O_RDONLY);
+            // Otwórz FIFO raz na początku i trzymaj otwarte (O_RDWR usuwa problem EOF gdy brak pisarzy)
+            // Używamy trybu blokującego, żeby nie robić busy-loop gdy nie ma danych.
+            int fd = open(PIPE_NAME, O_RDWR);
             if (fd < 0) {
                 printf("[Biletomat-klon -> PID=%d]: Blad otwarcia pipe: %s\n", getpid(), PIPE_NAME);
                 fflush(stdout);
@@ -257,73 +261,53 @@ int main(int argc, char* argv[]) {
                     wydzial_t typ;
                 } packet;
                 
-                int nread = read(fd, &packet, sizeof(packet));
-                printf("[Biletomat-klon -> PID=%d]: read() zwróci %d bajtów\n", getpid(), nread);
-                fflush(stdout);
-                
-                // EOF oznacza, że wszyscy pisarze zamknęli FIFO
-                if (nread == 0) {
-                    printf("[Biletomat-klon -> PID=%d]: EOF na pipe, ponownie otwieranie\n", getpid());
-                    fflush(stdout);
-                    close(fd);
-                    sleep(1);
-                    fd = open(PIPE_NAME, O_RDONLY);
-                    if (fd < 0) {
-                        printf("[Biletomat-klon -> PID=%d]: Błąd ponownego otwarcia pipe\n", getpid());
-                        fflush(stdout);
-                        break;
+                int nread = (int)read(fd, &packet, sizeof(packet));
+                if (nread < 0) {
+                    if (errno == EINTR) {
+                        continue;
                     }
+                    perror("[Biletomat-klon] read");
+                    sleep(1);
+                    continue;
+                }
+                
+                // Przy O_RDWR nie powinno być klasycznego EOF gdy brak pisarzy, ale zostawiamy safeguard.
+                if (nread == 0) {
+                    sleep(1);
                     continue;
                 }
                 
                 if (nread != (int)sizeof(packet)) { 
-                    printf("[Biletomat-klon -> PID=%d]: Blad: oczekiwano %lu bajtów, otrzymano %d\n", getpid(), sizeof(packet), nread);
+                    //printf("[Biletomat-klon -> PID=%d]: Blad: oczekiwano %lu bajtów, otrzymano %d\n", getpid(), sizeof(packet), nread);
                     fflush(stdout);
                     continue; 
                 }
                 
-                printf("[biletomat-klon %d] Przeczytano %d bajtów, cmd='%.16s', PID=%d, prio=%d, typ=%d\n", 
-                       idx, nread, packet.cmd, packet.pid, packet.prio, packet.typ);
+                //printf("[biletomat-klon %d] Przeczytano %d bajtów, cmd='%.16s', PID=%d, prio=%d, typ=%d\n", 
+                //       idx, nread, packet.cmd, packet.pid, packet.prio, packet.typ);
                 fflush(stdout);
                 
                 if (zamkniecie_urzedu) { break; }
                 
-                // KLON: Tylko odbiera żądania i dodaje do waiting_list
-                // Główny biletomat będzie zarządzać wydaniem biletów
+                // KLON: odbiera żądania i od razu przydziela tickety do ticket_list
                 
                 if (strncmp(packet.cmd, "ASSIGN_TICKET_TO", 16) == 0 || 
                     strncmp(packet.cmd, "ASSIGN_TICKET", 13) == 0 ||
                     strncmp(packet.cmd, "PETENT_LEFT", 11) == 0) {
-                    
-                    sem_wait(sem_clone);
-                    
+
                     if (strncmp(packet.cmd, "PETENT_LEFT", 11) == 0) {
-                        // Petent opuszcza budynek - zmniejsz people_inside
-                        if (*people_inside_ptr > 0) (*people_inside_ptr)--;
-                        printf("[biletomat-klon %d] Petent PID=%d opuszcza urząd (zgloszenie), osób w budynku: %d\n", 
-                               idx, packet.pid, *people_inside_ptr);
-                    } else {
-                        // ASSIGN_TICKET lub ASSIGN_TICKET_TO - dodaj do waiting_list
-                        if (*waiting_count_ptr < MAX_WAITING) {
-                            // OK - dodaj do waiting_list
-                            waiting_list[*waiting_count_ptr].pid = packet.pid;
-                            waiting_list[*waiting_count_ptr].prio = packet.prio;
-                            waiting_list[*waiting_count_ptr].typ = packet.typ;
-                            waiting_list[*waiting_count_ptr].used = 1;
-                            
-                            // Zwiększ licznik dla tego wydziału
-                            waiting_count_per_wydzial[packet.typ]++;
-                            
-                            printf("[biletomat-klon %d] Petent PID=%d dodany do waiting_list (pozycja %d, wydzial=%d, czeka: %d)\n", 
-                                   idx, packet.pid, *waiting_count_ptr, packet.typ, 
-                                   waiting_count_per_wydzial[packet.typ]);
-                            (*waiting_count_ptr)++;
-                        } else {
-                            printf("[biletomat-klon %d] BŁĄD: waiting_list pełna!\n", idx);
-                        }
+                        // Usuń petenta z kolejki w sposób spójny: bez "dziur" i z korektą liczników.
+                        sem_wait(sem_clone);
+                        remove_pid_from_tickets_locked(packet.pid);
+                        sem_post(sem_clone);
+                        continue;
                     }
-                    
-                    sem_post(sem_clone);
+
+                    if (strncmp(packet.cmd, "ASSIGN_TICKET_TO", 16) == 0) {
+                        assign_ticket_to(packet.pid, packet.prio, packet.typ, sem_clone, sem_ticket_assigned);
+                    } else {
+                        assign_ticket(packet.pid, packet.prio, packet.typ, sem_clone, sem_ticket_assigned);
+                    }
                 }
             }
             close(fd);
@@ -335,8 +319,6 @@ int main(int argc, char* argv[]) {
     biletomat_clones[0] = spawn_clone(0);
     active_clones = 1;
     
-    int zero_tickets_count = 0;  // Licznik iteracji z zerowymi biletami
-
     while (running) {
         int suma = 0;
         if (shm_ticket_count) {
@@ -345,93 +327,19 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < WYDZIAL_COUNT; ++i) suma += ticket_count[i];
         }
         
-        // ===== GŁÓWNY BILETOMAT: Zarządzanie waiting_list =====
-        
-        // 1. ODPRAWIANIE: Sprawdź czy są petenci czekający do zamkniętych wydziałów
-        if (*waiting_count_ptr > 0) {
-            sem_wait(sem);
-            
-            int i = 0;
-            while (i < *waiting_count_ptr) {
-                if (waiting_list[i].used == 1 && wydzial_closed[waiting_list[i].typ] == 1) {
-                    // Wydział zamknięty - odpraw petenta
-                    pid_t drop_pid = waiting_list[i].pid;
-                    wydzial_t drop_typ = waiting_list[i].typ;
-                    
-                    printf("[Biletomat -> PID=%d]: Odprawianie petenta PID=%d (wydzial=%d jest zamknięty)\n", 
-                           getpid(), drop_pid, drop_typ);
-                    
-                    // Usuń ze waiting queue
-                    if (i < *waiting_count_ptr - 1) {
-                        waiting_list[i] = waiting_list[*waiting_count_ptr - 1];
-                    }
-                    (*waiting_count_ptr)--;
-                    waiting_count_per_wydzial[drop_typ]--;
-                    
-                    // Wyślij SIGTERM
-                    kill(drop_pid, SIGTERM);
-                } else {
-                    i++;
+        // Informacyjne: ile petentów jest w ticket_list (w obsłudze / w kolejce do urzędników)
+        int petents_in_tickets = 0;
+        for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
+            int n = (shm_ticket_count) ? shm_ticket_count[wydzial] : ticket_count[wydzial];
+            for (int i = 0; i < n; ++i) {
+                if (ticket_list[wydzial][i].PID > 0) {
+                    petents_in_tickets++;
                 }
             }
-            
-            sem_post(sem);
         }
         
-        // 2. Wydaj bilet oczekującemu jeśli jest miejsce
-        if (*waiting_count_ptr > 0 && *people_inside_ptr < BUILDING_CAPACITY) {
-            sem_wait(sem);
-            
-            // Wydaj bilet pierwszemu oczekującemu (jeśli miejsce)
-            if (*waiting_count_ptr > 0 && *people_inside_ptr < BUILDING_CAPACITY) {
-                pid_t waiting_pid = waiting_list[0].pid;
-                int waiting_prio = waiting_list[0].prio;
-                wydzial_t waiting_typ = waiting_list[0].typ;
-                
-                // Wydaj bilet
-                int idx = 0;
-                if (shm_ticket_count) {
-                    idx = shm_ticket_count[waiting_typ]++;
-                    ticket_count[waiting_typ] = shm_ticket_count[waiting_typ];
-                } else {
-                    idx = ticket_count[waiting_typ]++;
-                }
-                ticket_list[waiting_typ][idx].index = idx;
-                ticket_list[waiting_typ][idx].PID = waiting_pid;
-                ticket_list[waiting_typ][idx].priorytet = waiting_prio;
-                ticket_list[waiting_typ][idx].typ = waiting_typ;
-                if (shm_ticket_count) shm_ticket_count[waiting_typ] = ticket_count[waiting_typ];
-                (*people_inside_ptr)++;
-                
-                printf("[Biletomat -> PID=%d]: WYDANO bilet dla czekającego PID=%d (wydzial=%d, pozycja w kolejce %d), osób w budynku: %d/%d\n", 
-                       getpid(), waiting_pid, waiting_typ, idx, *people_inside_ptr, BUILDING_CAPACITY);
-                
-                // Usuń ze waiting queue
-                wydzial_t removed_typ = waiting_list[0].typ;  // Zapamięta typ przed usunięciem
-                if (*waiting_count_ptr > 1) {
-                    waiting_list[0] = waiting_list[*waiting_count_ptr - 1];
-                }
-                (*waiting_count_ptr)--;
-                waiting_count_per_wydzial[removed_typ]--;  // Zmniejsz licznik dla tego wydziału
-            }
-            
-            sem_post(sem);
-        }
-        
-        // Sprawdzenie czy bilety się wyczerpały I nie ma już oczekujących
-        if (suma == 0 && *waiting_count_ptr == 0) {
-            zero_tickets_count++;
-            if (zero_tickets_count >= 10) {  // Przez 10 iteracji brak biletów i brak czekających = koniec
-                printf("[Biletomat -> PID=%d]: Bilety wyczerpane i brak czekających\n", getpid());
-                printf("[Biletomat -> PID=%d]: Koniec pracy biletomatu\n", getpid());
-                running = 0;
-                break;
-            }
-        } else {
-            if (*waiting_count_ptr > 0) {
-                printf("[Biletomat -> PID=%d]: Oczekujący petenci: %d\n", getpid(), *waiting_count_ptr);
-            }
-            zero_tickets_count = 0;  // Reset licznika jeśli pojawiły się bilety lub są czekający
+        if (petents_in_tickets > 0) {
+            printf("[Biletomat -> PID=%d]: Petenci w ticket_list: %d\n", getpid(), petents_in_tickets);
         }
         
         int K = N/3;
@@ -461,26 +369,26 @@ int main(int argc, char* argv[]) {
     
     // Odpraw wszystkich petentów czekających na bilet
     printf("[Biletomat -> PID=%d]: Odprawianie wszystkich czekających petentów...\n", getpid());
+    
+    // Zamarkuj wszystkie wydziały jako zamknięte - petenci będą wiedzieć że mogą wyjść
+    sem_wait(sem);
+    for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
+        wydzial_closed[wydzial] = 1;
+    }
+    sem_post(sem);
+    
     sem_wait(sem);
     int total_dismissed = 0;
     for (int wydzial = 0; wydzial < WYDZIAL_COUNT; ++wydzial) {
-        for (int i = 0; i < ticket_count[wydzial]; ++i) {
+        int n = (shm_ticket_count) ? shm_ticket_count[wydzial] : ticket_count[wydzial];
+        for (int i = 0; i < n; ++i) {
             pid_t petent_pid = ticket_list[wydzial][i].PID;
             if (petent_pid > 0) {
+                // Petent ma bilet (ticket_list) -> SIGTERM (jak odprawienie przez urzędnika)
                 kill(petent_pid, SIGTERM);
                 printf("[Biletomat -> PID=%d]: Odprawienie petenta PID=%d (wydział %d)\n", getpid(), petent_pid, wydzial);
                 total_dismissed++;
             }
-        }
-    }
-    
-    // Odpraw również petentów czekających w waiting_list
-    for (int i = 0; i < *waiting_count_ptr; ++i) {
-        if (waiting_list[i].used == 1) {
-            pid_t petent_pid = waiting_list[i].pid;
-            kill(petent_pid, SIGTERM);
-            printf("[Biletomat -> PID=%d]: Odprawienie petenta PID=%d (czekający)\n", getpid(), petent_pid);
-            total_dismissed++;
         }
     }
     

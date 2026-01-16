@@ -28,4 +28,6 @@ typedef enum {
 
 #define PETENT_AMOUNT 1000
 
+#define CZAS_KONIEC 120 // czas działania dyrektora w sekundach
+
 #endif 

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cstdlib>
+#include <cstring>
 #include "headers/loader.h"
 #include "config.h"
 #include <signal.h>
@@ -24,9 +25,19 @@ void sigint_bridge(int sig) {
 	}
 }
 
-int main() {
+int main(int argc, char** argv) {
 	// Zainstaluj handler przed uruchomieniem symulacji; handler użyje globalnych zmiennych
 	signal(SIGINT, sigint_bridge);
+
+	bool dry_run = false;
+	for (int i = 1; i < argc; ++i) {
+		if (std::strcmp(argv[i], "--dry-run") == 0) {
+			dry_run = true;
+		}
+	}
+	if (const char* env = std::getenv("SIM_DRY_RUN")) {
+		if (std::strcmp(env, "1") == 0) dry_run = true;
+	}
 
 	// Pobierz maksymalny limit procesów
 	int max_processes = get_process_limit();
@@ -53,6 +64,10 @@ int main() {
 	}
 	
 	std::cout << "[main] Uruchamianie symulacji z " << total_petents << " petentami..." << std::endl;
+	if (dry_run) {
+		std::cout << "[main] (dry-run) Pomijam start_simulation()" << std::endl;
+		return 0;
+	}
 	start_simulation(total_petents);
 	std::cout << "[main] Wszystkie procesy zakończone." << std::endl;
 	std::cout << "[main] Koniec działania." << std::endl;

@@ -7,8 +7,10 @@
 
 // Lista przykładowych PID urzędników (w praktyce można pobierać z pliku lub argumentów)
 
+
 #include <sys/mman.h>
 #include <fcntl.h>
+#include "../../config.h"
 
 pid_t urzednicy[MAX_URZEDNICY];
 int liczba_urzednikow = 0;
@@ -62,11 +64,13 @@ int main(int argc, char* argv[]) {
     int _ft = ftruncate(shm_fd, sizeof(int) * liczba_urzednikow);
     if (_ft == -1) perror("ftruncate dyrektor");
     int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * liczba_urzednikow, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    // Dyrektor cyklicznie sprawdza status urzędników
-    for (int t = 0; t < 60; ++t) {
+    // Dyrektor cyklicznie sprawdza status urzędników przez CZAS_KONIEC sekund
+    for (int t = 0; t < CZAS_KONIEC; ++t) {
         check_and_expel_if_exhausted(urzednik_exhausted, urzednicy, liczba_urzednikow);
         sleep(1);
     }
+    printf("[dyrektor] CZAS_KONIEC=%d sekund minął, kończę symulację!\n", CZAS_KONIEC);
+    wyslij_sygnal_do_urzednikow(SIGUSR2);
     munmap(urzednik_exhausted, sizeof(int) * liczba_urzednikow);
     close(shm_fd);
     shm_unlink(URZEDNIK_EXHAUST_SHM);
