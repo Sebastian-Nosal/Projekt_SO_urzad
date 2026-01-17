@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -6,14 +5,15 @@
 #include <string.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <format>
+#include <sstream>
 #include "../../config.h"
 #include "../biletomat/biletomat.h"
 #include "../dyrektor/dyrektor.h"
-#include "../kasa/kasa.h"
+#include "../../utils/zapisz_logi.h"
 
 #define RAPORT_FILE "raport_urzednik.txt"
 volatile sig_atomic_t zamkniecie_urzedu = 0;
@@ -65,9 +65,9 @@ int main(int argc, char* argv[]) {
         int _ft = ftruncate(shm_fd_exhaust, sizeof(int) * WYDZIAL_COUNT);
         if (_ft == -1) perror("ftruncate URZEDNIK_EXHAUST_SHM");
     }
-    int* urzednik_wyczerpanie = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
-    if (urzednik_wyczerpanie == MAP_FAILED) { perror("mmap urzednik_wyczerpanie"); return 1; }
-    urzednik_wyczerpanie[typ] = 0;
+    int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * WYDZIAL_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_exhaust, 0);
+    if (urzednik_exhausted == MAP_FAILED) { perror("mmap urzednik_exhausted"); return 1; }
+    urzednik_exhausted[typ] = 0;
     int shm_fd = -1;
     for (int attempt = 0; attempt < 10; ++attempt) {
         shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
@@ -75,9 +75,7 @@ int main(int argc, char* argv[]) {
         sleep(1);
     }
     if (shm_fd < 0) { perror("shm_open SHM_NAME"); return 1; }
-    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + 
-                      WYDZIAL_COUNT * sizeof(int) + 
-                      sizeof(int);
+    size_t shm_size = WYDZIAL_COUNT * sizeof(struct ticket) * MAX_TICKETS + WYDZIAL_COUNT * sizeof(int);
     void* shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     char* base = (char*)shm_ptr;
     struct ticket* ticket_list[WYDZIAL_COUNT];
@@ -101,67 +99,73 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (raport != stdout) setvbuf(raport, NULL, _IONBF, 0);
 
-    int obsluzone = 0; 
-    printf("[Urzędnik PID=%d, typ=%d]: Start wydziału %d, limit: %d\n", getpid(), typ, (int)typ, licznik);
-    fprintf(raport, "[Urzędnik PID=%d, typ=%d]: Start wydziału %d, limit: %d\n", getpid(), typ, (int)typ, licznik);
-    fflush(raport);
+    int obsluzone = 0;
+    {
+        std::ostringstream oss;
+        oss << "Start wydzialu " << typ << ", limit: " << licznik;
+        zapisz_log("Urzednik", getpid(), oss.str());
+    }
     while (1) {
         if (licznik <= 0) {
-            if (!urzednik_wyczerpanie[typ]) {
-                urzednik_wyczerpanie[typ] = 1;
-                printf("[Urzędnik PID=%d, typ=%d]: Wyczerpany (limit wyczerpany) - odsyłam z kwitkiem bez kończenia procesu\n", getpid(), typ);
-                fflush(stdout);
-                
-            }
-
-            // Wyczerpany urządnik: usuwa petentów z kolejki i odsyła z kwitkiem, ale proces działa dalej.
-            sem_wait(sem);
-            int n = ticket_count[typ];
-            while (n > 0 && ticket_list[typ][0].PID <= 0) {
-                for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
-                ticket_count[typ]--;
-                n--;
-            }
-            if (n > 0) {
-                struct ticket t = ticket_list[typ][0];
-                for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
-                ticket_count[typ]--;
+            if (!urzednik_exhausted[typ]) {
+                urzednik_exhausted[typ] = 1;
+                {
+                    std::ostringstream oss;
+                    oss << "Wyczepany (limit wyczerpany)";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
+                sem_wait(sem);
+                int pending = ticket_count[typ];
+                for (int i = 0; i < pending; ++i) {
+                    struct ticket tt = ticket_list[typ][i];
+                    fprintf(raport, "[Urzędnik %d] (EXHAUST) ODPRAWIONY: PID=%d, idx=%d\n", typ, tt.PID, tt.index);
+                    {
+                        std::ostringstream oss;
+                        oss << "(EXHAUST) ODPRAWIONY: PID=" << tt.PID << ", idx=" << tt.index;
+                        zapisz_log("Urzednik", getpid(), oss.str());
+                    }
+                    kill(tt.PID, SIGTERM);
+                }
+                ticket_count[typ] = 0;
                 sem_post(sem);
-
-                fprintf(raport, "[Urzędnik %d] (EXHAUST) ODPRAWIONY: PID=%d, idx=%d\n", typ, t.PID, t.index);
-                printf("[Urzędnik PID=%d, typ=%d]: (EXHAUST) ODPRAWIONY: PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
-                fflush(raport);
-                fflush(stdout);
-                if (t.PID > 0) kill(t.PID, SIGTERM);
-            } else {
-                sem_post(sem);
-                sleep(1);
+                {
+                    std::ostringstream oss;
+                    oss << "Koniec pracy (limit wyczerpany)";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
+                break;
             }
-            continue;
         }
         if (dyrektor_koniec) {
             if (licznik <= 0) {
-                printf("[Urzędnik PID=%d, typ=%d]: Dyrektor nakazał koniec\n", getpid(), typ);
+                {
+                    std::ostringstream oss;
+                    oss << "Dyrektor nakazal koniec";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 break;
             }
             sem_wait(sem);
             int n = ticket_count[typ];
-            while (n > 0 && ticket_list[typ][0].PID <= 0) {
-                for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
-                ticket_count[typ]--;
-                n--;
-            }
             if (n > 0) {
                 struct ticket t = ticket_list[typ][0];
                 for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
                 ticket_count[typ]--;
                 fprintf(raport, "[Urzędnik %d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
-                printf("[Urzędnik PID=%d, typ=%d] (DYREKTOR KONIEC) Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
+                {
+                    std::ostringstream oss;
+                    oss << "(DYREKTOR KONIEC) Obs\u0142uguje petenta PID=" << t.PID << ", idx=" << t.index;
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 fflush(raport);
                 fflush(stdout);
-                if (t.PID > 0) kill(t.PID, SIGUSR1);
+                kill(t.PID, SIGUSR1);
                 licznik--;
-                printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
+                {
+                    std::ostringstream oss;
+                    oss << "PID=" << getpid() << " obs\u0142u\u017cy\u0142 petenta, pozosta\u0142o jeszcze " << licznik << " mo\u017cliwych petent\u00f3w do obs\u0142u\u017cenia.";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
             }
             sem_post(sem);
             continue;
@@ -171,9 +175,11 @@ int main(int argc, char* argv[]) {
             int n = ticket_count[typ];
             for (int i = 0; i < n; ++i) {
                 struct ticket t = ticket_list[typ][i];
-                if (t.PID > 0) {
-                    fprintf(raport, "[Urzędnik %d] (ZAMKNIĘCIE) NIEPRZYJĘTY: PID=%d, idx=%d\n", typ, t.PID, t.index);
-                    printf("[Urzędnik PID=%d, typ=%d] (ZAMKNIĘCIE) NIEPRZYJĘTY: PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
+                fprintf(raport, "[Urzędnik %d] (ZAMKNIĘCIE) NIEPRZYJĘTY: PID=%d, idx=%d\n", typ, t.PID, t.index);
+                {
+                    std::ostringstream oss;
+                    oss << "(ZAMKNI\u0118CIE) NIEPRZYJ\u0118TY: PID=" << t.PID << ", idx=" << t.index;
+                    zapisz_log("Urzednik", getpid(), oss.str());
                 }
             }
             ticket_count[typ] = 0;
@@ -182,11 +188,6 @@ int main(int argc, char* argv[]) {
         }
         sem_wait(sem);
         int n = ticket_count[typ];
-        while (n > 0 && ticket_list[typ][0].PID <= 0) {
-            for (int i = 1; i < n; ++i) ticket_list[typ][i-1] = ticket_list[typ][i];
-            ticket_count[typ]--;
-            n--;
-        }
         if (n == 0) {
             sem_post(sem);
             sleep(1);
@@ -197,7 +198,11 @@ int main(int argc, char* argv[]) {
         ticket_count[typ]--;
         sem_post(sem);
         fprintf(raport, "[Urzędnik %d] Obsługuje petenta PID=%d, idx=%d\n", typ, t.PID, t.index);
-        printf("[Urzędnik PID=%d, typ=%d]: Obsługuje petenta PID=%d, idx=%d\n", getpid(), typ, t.PID, t.index);
+        {
+            std::ostringstream oss;
+            oss << "Obs\u0142uguje petenta PID=" << t.PID << ", idx=" << t.index;
+            zapisz_log("Urzednik", getpid(), oss.str());
+        }
         fflush(raport);
         fflush(stdout);
         
@@ -205,91 +210,79 @@ int main(int argc, char* argv[]) {
             double r = (double)rand() / RAND_MAX;
             if (r < PROB_SA_SOLVE) {
                 fprintf(raport, "[Urzędnik SA] Sprawa załatwiona dla PID=%d\n", t.PID);
-                printf("[Urzędnik PID=%d, typ=%d]: Sprawa załatwiona dla PID=%d\n", getpid(), typ, t.PID);
+                {
+                    std::ostringstream oss;
+                    oss << "Sprawa zalatwona dla PID=" << t.PID;
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 fflush(stdout);
-                if (t.PID > 0) kill(t.PID, SIGUSR1);
+                kill(t.PID, SIGUSR1);
                 licznik--;
                 obsluzone++;
-                printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
+                {
+                    std::ostringstream oss;
+                    oss << "PID=" << getpid() << " obsłużył petenta, pozostało jeszcze " << licznik << " możliwych petentów do obsłużenia.";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
             } else {
                 wydzial_t cel = random_sa_target();
-                
-                if (urzednik_wyczerpanie[cel]) {
-                    fprintf(raport, "[Urzędnik SA] Wydział %d jest już wyczerpany - ODPRAWIENIE PID=%d\n", cel, t.PID);
-                    printf("[Urzędnik PID=%d, typ=%d]: Wydział %d jest wyczerpany - odprawianie PID=%d\n", getpid(), typ, cel, t.PID);
-                    obsluzone++;
-                    if (t.PID > 0) kill(t.PID, SIGTERM);
-                    fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
-                } else {
-                    sem_wait(sem);
-                    int cel_n = ticket_count[cel];
-                    sem_post(sem);
-                    // Pozwól na przekierowanie jeśli jest jakiekolwiek miejsce w kolejce (do MAX_TICKETS)
-                    if (cel_n < MAX_TICKETS) {
-                        fprintf(raport, "[Urzędnik SA] Przekierowuje PID=%d do wydziału %d\n", t.PID, cel);
-                        printf("[Urzędnik PID=%d, typ=%d]: Przekierowuje PID=%d do wydziału %d\n", getpid(), typ, t.PID, cel);
-                        sem_wait(sem);
-                        int idx2 = ticket_count[cel]++;
-                        ticket_list[cel][idx2] = t;
-                        ticket_list[cel][idx2].typ = cel;
-                        sem_post(sem);
-                        printf("[Urzędnik] PID=%d przekierował petenta PID=%d do wydziału %d (nowa liczba biletów: %d)\n", getpid(), t.PID, cel, ticket_count[cel]);
-                    } else {
-                        fprintf(raport, "[Urzędnik SA] BRAK MIEJSC w wydziale %d dla PID=%d, raport NIEPRZYJĘTY\n", cel, t.PID);
-                        printf("[Urzędnik PID=%d, typ=%d]: BRAK MIEJSC w wydziale %d dla PID=%d\n", getpid(), typ, cel, t.PID);
-                        obsluzone++;
-                        if (t.PID > 0) kill(t.PID, SIGTERM);
-                        fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
+                int cel_limit = get_limit(cel);
+                sem_wait(sem);
+                int cel_n = ticket_count[cel];
+                sem_post(sem);
+                if (cel_n < cel_limit) {
+                    fprintf(raport, "[Urzędnik SA] Przekierowuje PID=%d do wydziału %d\n", t.PID, cel);
+                    {
+                        std::ostringstream oss;
+                        oss << "Przekierowuje PID=" << t.PID << " do wydzialu " << cel;
+                        zapisz_log("Urzednik", getpid(), oss.str());
                     }
+                    sem_wait(sem);
+                    int idx2 = ticket_count[cel]++;
+                    ticket_list[cel][idx2] = t;
+                    ticket_list[cel][idx2].typ = cel;
+                    sem_post(sem);
+                    printf("[Urzędnik] PID=%d przekierował petenta PID=%d do wydziału %d (nowa liczba biletów: %d)\n", getpid(), t.PID, cel, ticket_count[cel]);
+                } else {
+                    fprintf(raport, "[Urzędnik SA] BRAK MIEJSC w wydziale %d dla PID=%d, raport NIEPRZYJĘTY\n", cel, t.PID);
+                    printf("[Urzednika -> PID=%d]: BRAK MIEJSC w wydziale %d dla PID=%d\n", getpid(), cel, t.PID);
+                    obsluzone++;
+                    kill(t.PID, SIGTERM);
+                    fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
                 }
             }
         } else {
             double r = (double)rand() / RAND_MAX;
             if (r < 0.1) {
                 fprintf(raport, "[Urzędnik %d] Skierowano PID=%d do kasy\n", typ, t.PID);
-                printf("[Urzędnik PID=%d, typ=%d]: Skierowano PID=%d do kasy\n", getpid(), typ, t.PID);
-
-                // Wyślij żądanie do kasy (FIFO). Kasa po obsłudze zakończy petenta SIGUSR1.
-                struct kasa_request req;
-                req.petent_pid = t.PID;
-                req.kwota = 100;  // stała kwota; można zrandomizować jeśli chcesz
-
-                int sent = 0;
-                while (!sent && !zamkniecie_urzedu) {
-                    int fd = open(KASA_PIPE, O_WRONLY | O_NONBLOCK);
-                    if (fd < 0) {
-                        // ENOENT: kasa nie utworzyła FIFO; ENXIO: brak czytelnika (kasa nie działa)
-                        sleep(1);
-                        continue;
-                    }
-                    ssize_t w = write(fd, &req, sizeof(req));
-                    close(fd);
-                    if (w == (ssize_t)sizeof(req)) {
-                        sent = 1;
-                        break;
-                    }
-                    // Jeśli nie udało się zapisać, spróbuj ponownie.
-                    sleep(1);
+                {
+                    std::ostringstream oss;
+                    oss << "[Urzednika -> PID=" << getpid() << "]: Skierowano PID=" << t.PID << " do kasy";
+                    zapisz_log("Urzednik", getpid(), oss.str());
                 }
-                if (!sent) {
-                    fprintf(raport, "[Urzędnik %d] (KASA) NIEUDAŁO SIĘ wysłać PID=%d do kasy\n", typ, t.PID);
-                    printf("[Urzędnik PID=%d, typ=%d]: (KASA) NIEUDAŁO SIĘ wysłać PID=%d do kasy\n", getpid(), typ, t.PID);
-                }
-
                 obsluzone++;
-                // Po wizycie w kasie urzędnik kończy sprawę tak jak zwykle.
-                if (t.PID > 0) kill(t.PID, SIGUSR1);
-                licznik--;
-                fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
+                {
+                    std::ostringstream oss;
+                    oss << "[Raport] Obsluzono: " << obsluzone << ", Mozna obsluzyc jeszcze: " << licznik;
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
             } else {
                 fprintf(raport, "[Urzędnik %d] Sprawa załatwiona dla PID=%d\n", typ, t.PID);
-                printf("[Urzędnik PID=%d, typ=%d]: Sprawa załatwiona dla PID=%d\n", getpid(), typ, t.PID);
+                {
+                    std::ostringstream oss;
+                    oss << "Sprawa zalatowiona dla PID=" << t.PID;
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 fflush(stdout);
-                if (t.PID > 0) kill(t.PID, SIGUSR1);
+                kill(t.PID, SIGUSR1);
                 licznik--;
                 obsluzone++;
-                printf("[Urzędnik] PID=%d obsłużył petenta, pozostało jeszcze %d możliwych petentów do obsłużenia.\n", getpid(), licznik);
+                {
+                    std::ostringstream oss;
+                    oss << "PID=" << getpid() << " obsłużył petenta, pozostało jeszcze " << licznik << " możliwych petentów do obsłużenia.";
+                    zapisz_log("Urzednik", getpid(), oss.str());
+                }
                 fprintf(raport, "[Raport] Obsłużono: %d, Można obsłużyć jeszcze: %d\n", obsluzone, licznik);
             }
         }
@@ -297,10 +290,6 @@ int main(int argc, char* argv[]) {
         sleep(1);
     }
     fclose(raport);
-    
-    // Koniec pracy wydziału — brak dodatkowych flag w SHM w uproszczonej wersji
-    printf("[Urzędnik PID=%d, typ=%d]: Koniec pracy wydziału\n", getpid(), typ);
-    
     munmap(shm_ptr, shm_size);
     close(shm_fd);
     sem_close(sem);

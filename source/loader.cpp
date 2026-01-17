@@ -7,43 +7,45 @@
 #include <sys/resource.h>
 #include <csignal>
 #include <time.h>
+#include <format>
+#include <sstream>
+#include "../utils/zapisz_logi.h"
 
 
-// Definicje globalnych zmiennych zadeklarowanych w headers/loader.h
 volatile pid_t g_dyrektor_pid = 0;
 volatile sig_atomic_t g_pending_sigint = 0;
 
-// Funkcja do pobrania maksymalnej liczby procesów dla bieżącego użytkownika
 int get_process_limit() {
 	struct rlimit limit;
 	if (getrlimit(RLIMIT_NPROC, &limit) == 0) {
-		printf("[loader] Limit procesów dla użytkownika: %lu\n", limit.rlim_cur);
+		std::ostringstream oss;
+		oss << "Limit proces\u00f3w dla u\u017cytkownika: " << limit.rlim_cur;
+		zapisz_log("loader", 0, oss.str());
 		return (int)limit.rlim_cur;
 	}
-	// Fallback: próba przeczytania z /proc/sys/kernel/pid_max
 	int global_limit = 1024;
 	FILE* fp = fopen("/proc/sys/kernel/pid_max", "r");
 	if (fp) {
 		if (fscanf(fp, "%d", &global_limit) != 1) {
-			// Ignoruj błąd fscanf
 		}
 		fclose(fp);
-		printf("[loader] Nie można odczytać limitu użytkownika, używam globalnego: %d\n", global_limit);
+		std::ostringstream oss;
+		oss << "Nie mo\u017cna odczyta\u0107 limitu u\u017cytkownika, u\u017cywam globalnego: " << global_limit;
+		zapisz_log("loader", 0, oss.str());
 	}
 	return global_limit;
 }
 
-// Globalne PIDs do zarządzania
 pid_t* g_all_pids = NULL;
 int g_all_pids_count = 0;
 
-// Handler SIGUSR1: wysyła SIGUSR1 do urzędników i SIGTERM do petentów
 void sigusr1_shutdown_handler(int sig) {
-	printf("[loader] Otrzymano sygnał zamknięcia. Wysyłam sygnały do wszystkich procesów...\n");
+	std::ostringstream oss;
+	oss << "Otrzymano sygna\u0142 zamkni\u0119cia. Wysy\u0142am sygna\u0142y do wszystkich proces\u00f3w...";
+	zapisz_log("loader", 0, oss.str());
 	for (int i = 0; i < g_all_pids_count; ++i) {
 		if (g_all_pids[i] > 0) {
-			// Pierwsze 3 procesy: dyrektor, biletomat, kasa - SIGUSR1
-			// Pozostałe: urzędnicy + petenci - wysyłamy SIGUSR1 do urzędników, SIGTERM do petentów
+
 			if (i < 3) {
 				kill(g_all_pids[i], SIGUSR1);
 			} else {
@@ -51,11 +53,15 @@ void sigusr1_shutdown_handler(int sig) {
 			}
 		}
 	}
-	printf("[loader] Sygnały wysłane.\n");
+	std::ostringstream oss2;
+	oss2 << "Sygna\u0142y wys\u0142ane.";
+	zapisz_log("loader", 0, oss2.str());
 }
 
 void start_simulation(int liczba_petentow) {
-	printf("[Loader -> PID=%d]: Start symulacji z %d petentami\n", getpid(), liczba_petentow);
+	std::ostringstream oss;
+	oss << "Start symulacji z " << liczba_petentow << " petentami";
+	zapisz_log("Loader", getpid(), oss.str());
 
 	g_all_pids_count = 0;
 	g_all_pids = (pid_t*) malloc(sizeof(pid_t) * (1 + 1 + 1 + 10 + liczba_petentow)); // dyrektor + biletomat + kasa + urzednicy + petenci
@@ -68,7 +74,6 @@ void start_simulation(int liczba_petentow) {
 	}
 	g_all_pids[g_all_pids_count++] = dyrektor_pid;
 
-	// Ustaw globalny PID dyrektora, aby `main` mógł wysyłać sygnały (mostek SIGINT)
 	extern volatile pid_t g_dyrektor_pid;
 	extern volatile sig_atomic_t g_pending_sigint;
 	g_dyrektor_pid = dyrektor_pid;
@@ -121,7 +126,6 @@ void start_simulation(int liczba_petentow) {
 	pid_t* allowed_petents = (pid_t*) malloc(sizeof(pid_t) * petenty_do_uruchomienia);
 	int allowed_count = 0;
 
-	// Rozprowadź petentów równomiernie na wydziały
 	for (int idx = 0; idx < petenty_do_uruchomienia; ++idx) {
 		int wydzial = idx % WYDZIAL_COUNT;
 		pid_t pid = fork();
@@ -139,17 +143,13 @@ void start_simulation(int liczba_petentow) {
 		g_all_pids[g_all_pids_count++] = pid;
 	}
 
-	// Zainstaluj handler SIGUSR1 do obsługi sygnału zamknięcia
 	signal(SIGUSR1, sigusr1_shutdown_handler);
 
-	// Czekaj na wszystkie procesy z monitorowaniem petentów
-	printf("[Loader -> PID=%d]: Oczekiwanie na procesy. Będę sprawdzać liczbę żywych petentów co 2 sekundy\n", getpid());
 	int petents_alive = allowed_count;
 	time_t last_check = time(NULL);
 	int all_done = 0;
 	
 	while (!all_done) {
-		// Sprawdzaj co 2 sekundy ile petentów jeszcze żyje
 		time_t now = time(NULL);
 		if (now - last_check >= 2) {
 			petents_alive = 0;
@@ -167,7 +167,6 @@ void start_simulation(int liczba_petentow) {
 			last_check = now;
 		}
 		
-		// Nieblokujące czekanie na procesy
 		int urzednicy_done = 0;
 		for (int i = 0; i < urzednik_count; ++i) {
 			if (waitpid(urzednik_pids[i], NULL, WNOHANG) > 0) {
@@ -176,13 +175,11 @@ void start_simulation(int liczba_petentow) {
 			}
 		}
 		
-		// Sprawdzaj czy wszyscy urzędnicy się skończyli
 		int all_urzednicy_done = 1;
 		for (int i = 0; i < urzednik_count; ++i) {
 			if (urzednik_pids[i] > 0) { all_urzednicy_done = 0; break; }
 		}
 		
-		// Gdy ostatni urzędnik się skończy, wyślij SIGTERM do pozostałych petentów (nie da się ich obsłużyć)
 		static int urzednicy_finished_signaled = 0;
 		if (all_urzednicy_done && !urzednicy_finished_signaled) {
 			printf("[Loader -> PID=%d]: Wszyscy urzednicy skonczyli prace! Wysyłam SIGTERM do czekających petentów...\n", getpid());
@@ -197,12 +194,11 @@ void start_simulation(int liczba_petentow) {
 			urzednicy_finished_signaled = 1;
 		}
 		
-		// Jeśli urzędnicy się skończyli i upłynęło trochę czasu, wyślij SIGKILL do petentów którzy wciąż żyją
 		static int sigkill_sent = 0;
 		static time_t sigterm_time = 0;
 		if (urzednicy_finished_signaled && !sigkill_sent) {
 			if (sigterm_time == 0) sigterm_time = time(NULL);
-			if (time(NULL) - sigterm_time >= 1) {  // Po 1 sekundzie wyślij SIGKILL
+			if (time(NULL) - sigterm_time >= 1) {  
 				int still_alive = 0;
 				for (int i = 0; i < allowed_count; ++i) {
 					if (allowed_petents[i] > 0 && kill(allowed_petents[i], 0) == 0) {
@@ -226,7 +222,6 @@ void start_simulation(int liczba_petentow) {
 			}
 		}
 		
-		// Sprawdzaj czy wszystkie procesy się skończyły
 		all_done = 1;
 		for (int i = 0; i < urzednik_count; ++i) {
 			if (urzednik_pids[i] > 0) { all_done = 0; break; }
@@ -240,20 +235,17 @@ void start_simulation(int liczba_petentow) {
 		
 		if (!all_done) sleep(1);
 	}
-	
-	// CZEKAJ BLOKOWO AŻ BILETOMAT SIĘ CAŁKOWICIE SKOŃCZY (posprzątanie zasobów)
+
 	printf("[Loader -> PID=%d]: Czekam na biletomat (posprzątanie zasobów)...\n", getpid());
-	waitpid(biletomat_pid, NULL, 0);  // Blokowy wait
+	waitpid(biletomat_pid, NULL, 0);
 	printf("[Loader -> PID=%d]: Biletomat się skończył i posprzątał zasoby\n", getpid());
-	
-	// Czekaj na kaszę
+
 	printf("[Loader -> PID=%d]: Czekam na kasę...\n", getpid());
-	waitpid(kasa_pid, NULL, 0);  // Blokowy wait
+	waitpid(kasa_pid, NULL, 0);
 	printf("[Loader -> PID=%d]: Kasa się skończyła\n", getpid());
 	
-	// Czekaj na dyrektora
 	printf("[Loader -> PID=%d]: Czekam na dyrektora...\n", getpid());
-	waitpid(dyrektor_pid, NULL, 0);  // Blokowy wait
+	waitpid(dyrektor_pid, NULL, 0); 
 	printf("[Loader -> PID=%d]: Dyrektor się skończył\n", getpid());
 	
 	printf("[loader] Symulacja zakończona\n");

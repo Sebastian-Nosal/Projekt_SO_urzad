@@ -20,6 +20,28 @@ die() {
   exit 1
 }
 
+check_can_fork() {
+  set +e
+  ( : ) >/dev/null 2>&1 &
+  local rc=$?
+  local pid=$!
+  set -e
+
+  if [[ $rc -ne 0 || -z "${pid:-}" ]]; then
+    echo "[test] FAIL: Brak zasobów na fork() (Resource temporarily unavailable)." >&2
+    echo "[test] To oznacza, że środowisko osiągnęło limit procesów (RLIMIT_NPROC / cgroup pids)." >&2
+    echo "[test] Zwolnij procesy albo zwiększ limit i uruchom ponownie." >&2
+    echo "[test] Pomocne komendy (w tej samej powłoce):" >&2
+    echo "[test]   ulimit -u" >&2
+    echo "[test]   cat /sys/fs/cgroup/pids.max 2>/dev/null; cat /sys/fs/cgroup/pids.current 2>/dev/null" >&2
+    echo "[test]   ps -e | wc -l" >&2
+    echo "[test]   pkill -f './workers/'  # jeśli zostały zombie/procesy z poprzednich uruchomień" >&2
+    exit 1
+  fi
+
+  wait "$pid" >/dev/null 2>&1 || true
+}
+
 require_bin() {
   local p="$1"
   [[ -x "$p" ]] || die "Brak binarki: $p (zbuduj: ./build_workers.sh)"
@@ -259,6 +281,8 @@ TEST_4_director_signal_ends_all() {
 main() {
   log "Repo: $ROOT_DIR"
   log "Wyniki: $OUT_DIR"
+
+  check_can_fork
 
   TEST_1_ticket_issuing
   TEST_2_softcap_process_limit

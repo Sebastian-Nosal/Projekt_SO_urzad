@@ -4,9 +4,9 @@
 #include <string.h>
 #include "dyrektor.h"
 #include <sys/types.h>
-
-// Lista przykładowych PID urzędników (w praktyce można pobierać z pliku lub argumentów)
-
+#include <format>
+#include "../../utils/zapisz_logi.h"
+#include <sstream>
 
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -24,7 +24,11 @@ void check_and_expel_if_exhausted(int* urzednik_exhausted, pid_t* urzednicy, int
         }
     }
     if (all_exhausted) {
-        printf("[dyrektor] Wszyscy urzędnicy wyczerpani! Wypraszam wszystkich z budynku!\n");
+        {
+            std::ostringstream oss;
+            oss << "Wszyscy urz\u0119dnicy wyczerpani! Wypraszam wszystkich z budynku!";
+            zapisz_log("dyrektor", 0, oss.str());
+        }
         wyslij_sygnal_do_urzednikow(SIGUSR2);
     }
 }
@@ -32,7 +36,11 @@ void check_and_expel_if_exhausted(int* urzednik_exhausted, pid_t* urzednicy, int
 void wyslij_sygnal_do_urzednikow(int sygnal) {
     for (int i = 0; i < liczba_urzednikow; ++i) {
         if (kill(urzednicy[i], sygnal) == 0) {
-            printf("[dyrektor] Wysłano sygnał %d do urzędnika PID=%d\n", sygnal, urzednicy[i]);
+            {
+                std::ostringstream oss;
+                oss << "Wys\u0142ano sygna\u0142 " << sygnal << " do urz\u0119dnika PID=" << urzednicy[i];
+                zapisz_log("dyrektor", urzednicy[i], oss.str());
+            }
         } else {
             perror("[dyrektor] Błąd wysyłania sygnału");
         }
@@ -41,39 +49,63 @@ void wyslij_sygnal_do_urzednikow(int sygnal) {
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        printf("Użycie: %s <sygnał: 1|2> <PID_URZEDNIKA> [PID_URZEDNIKA ...]\n", argv[0]);
+        {
+            std::ostringstream oss;
+            oss << "U\u017cycie: " << argv[0] << " <sygna\u0142: 1|2> <PID_URZEDNIKA> [PID_URZEDNIKA ...]";
+            zapisz_log("dyrektor", 0, oss.str());
+        }
         return 1;
     }
     int sygnal = 0;
     if (strcmp(argv[1], "1") == 0) sygnal = SIGUSR1;
     else if (strcmp(argv[1], "2") == 0) sygnal = SIGUSR2;
     else {
-        printf("Nieznany sygnał: %s\n", argv[1]);
+        {
+            std::ostringstream oss;
+            oss << "Nieznany sygna\u0142: " << argv[1];
+            zapisz_log("dyrektor", 0, oss.str());
+        }
         return 1;
     }
     liczba_urzednikow = argc - 2;
     for (int i = 0; i < liczba_urzednikow; ++i) {
         urzednicy[i] = (pid_t)atoi(argv[i + 2]);
     }
-    printf("[dyrektor] Wysyłam sygnał %d do %d urzędników\n", sygnal, liczba_urzednikow);
-    for (int i = 0; i < liczba_urzednikow; ++i) printf("[dyrektor] Urzędnik #%d PID=%d\n", i, urzednicy[i]);
+    {
+        std::ostringstream oss;
+        oss << "Wysy\u0142am sygna\u0142 " << sygnal << " do " << liczba_urzednikow << " urz\u0119dnik\u00f3w";
+        zapisz_log("dyrektor", 0, oss.str());
+    }
+    for (int i = 0; i < liczba_urzednikow; ++i) {
+        {
+            std::ostringstream oss;
+            oss << "Urz\u0119dnik #" << i << " PID=" << urzednicy[i];
+            zapisz_log("dyrektor", urzednicy[i], oss.str());
+        }
+    }
     wyslij_sygnal_do_urzednikow(sygnal);
 
-    // Sprawdź wyczerpanie urzędników przez shared memory
     int shm_fd = shm_open(URZEDNIK_EXHAUST_SHM, O_CREAT | O_RDWR, 0666);
     int _ft = ftruncate(shm_fd, sizeof(int) * liczba_urzednikow);
     if (_ft == -1) perror("ftruncate dyrektor");
     int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * liczba_urzednikow, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    // Dyrektor cyklicznie sprawdza status urzędników przez CZAS_KONIEC sekund
     for (int t = 0; t < CZAS_KONIEC; ++t) {
         check_and_expel_if_exhausted(urzednik_exhausted, urzednicy, liczba_urzednikow);
         sleep(1);
     }
-    printf("[dyrektor] CZAS_KONIEC=%d sekund minął, kończę symulację!\n", CZAS_KONIEC);
+    {
+        std::ostringstream oss;
+        oss << "CZAS_KONIEC=" << CZAS_KONIEC << " sekund min\u0105\u0142, ko\u0144cz\u0119 symulacj\u0119!";
+        zapisz_log("dyrektor", 0, oss.str());
+    }
     wyslij_sygnal_do_urzednikow(SIGUSR2);
     munmap(urzednik_exhausted, sizeof(int) * liczba_urzednikow);
     close(shm_fd);
     shm_unlink(URZEDNIK_EXHAUST_SHM);
-    printf("[dyrektor] Zakończono pracę.\n");
+    {
+        std::ostringstream oss;
+        oss << "Zako\u0144czono prac\u0119.";
+        zapisz_log("dyrektor", 0, oss.str());
+    }
     return 0;
 }

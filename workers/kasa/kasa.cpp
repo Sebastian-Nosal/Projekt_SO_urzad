@@ -6,41 +6,64 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <string.h>
+#include <format>
+#include <sstream>
+#include "../../utils/zapisz_logi.h"
 #include "kasa.h"
 
 volatile sig_atomic_t running = 1;
 
 void sig_handler(int sig) {
     if (sig == SIGUSR1) {
-        printf("[Kasa -> PID=%d]: Otrzymano SIGUSR1 - konczę pracę\n", getpid());
+        {
+            std::ostringstream oss;
+            oss << "Otrzymano SIGUSR1 - koncz\u0119 prac\u0119";
+            zapisz_log("Kasa", getpid(), oss.str());
+        }
+        running = 0;
     }
-    running = 0;
 }
 
 void obsluga_kasy() {
     mkfifo(KASA_PIPE, 0666);
-    printf("[Kasa -> PID=%d]: Start pracy, oczekiwanie na żądania przez pipe: %s\n", getpid(), KASA_PIPE);
+    {
+        std::ostringstream oss;
+        oss << "Start pracy, oczekiwanie na \u017c\u0105dania przez pipe: " << KASA_PIPE;
+        zapisz_log("Kasa", getpid(), oss.str());
+    }
     while (running) {
-        // Otwórz pipe w trybie non-blocking, aby mógł się wybudzić na sygnały
         int fd = open(KASA_PIPE, O_RDONLY | O_NONBLOCK);
         if (fd >= 0) {
             struct kasa_request req;
             int r = read(fd, &req, sizeof(req));
             if (r == sizeof(req)) {
-                printf("[Kasa -> PID=%d]: Otrzymano żądanie opłaty od PID=%d, kwota=%d\n", getpid(), req.petent_pid, req.kwota);
-                // Symulacja obsługi opłaty
+                {
+                    std::ostringstream oss;
+                    oss << "Otrzymano \u017c\u0105danie op\u0142aty od PID=" << req.petent_pid << ", kwota=" << req.kwota;
+                    zapisz_log("Kasa", getpid(), oss.str());
+                }
                 sleep(1);
-                printf("[kasa] Opłata przyjęta od PID=%d\n", req.petent_pid);
-                printf("[kasa] Petent przyszedł do kasy (PID=%d)\n", req.petent_pid);
+                {
+                    std::ostringstream oss;
+                    oss << "Op\u0142ata przyj\u0119ta od PID=" << req.petent_pid;
+                    zapisz_log("kasa", getpid(), oss.str());
+                }
+                {
+                    std::ostringstream oss;
+                    oss << "Petent przyszed\u0142 do kasy (PID=" << req.petent_pid << ")";
+                    zapisz_log("kasa", getpid(), oss.str());
+                }
                 fflush(stdout);
             }
             close(fd);
         }
-        // Krótka pauza, aby znowu sprawdzić sygnały
         sleep(1);
     }
-    unlink(KASA_PIPE);
-    printf("[kasa] Zakończono pracę.\n");
+    {
+        std::ostringstream oss;
+        oss << "Zako\u0144czono prac\u0119.";
+        zapisz_log("kasa", getpid(), oss.str());
+    }
 }
 
 int main() {
