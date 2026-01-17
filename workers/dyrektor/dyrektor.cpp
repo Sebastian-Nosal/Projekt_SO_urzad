@@ -15,7 +15,7 @@
 pid_t urzednicy[MAX_URZEDNICY];
 int liczba_urzednikow = 0;
 
-void check_and_expel_if_exhausted(int* urzednik_exhausted, pid_t* urzednicy, int liczba_urzednikow) {
+void sprawdz_i_obsluz_wyczerpanych(int* urzednik_exhausted, pid_t* urzednicy, int liczba_urzednikow) {
     int all_exhausted = 1;
     for (int i = 0; i < liczba_urzednikow; ++i) {
         if (!urzednik_exhausted[i]) {
@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
     if (_ft == -1) perror("ftruncate dyrektor");
     int* urzednik_exhausted = (int*)mmap(0, sizeof(int) * liczba_urzednikow, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     for (int t = 0; t < CZAS_KONIEC; ++t) {
-        check_and_expel_if_exhausted(urzednik_exhausted, urzednicy, liczba_urzednikow);
+        sprawdz_i_obsluz_wyczerpanych(urzednik_exhausted, urzednicy, liczba_urzednikow);
         sleep(1);
     }
     {

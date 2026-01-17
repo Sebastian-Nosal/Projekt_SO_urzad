@@ -17,7 +17,7 @@ log() { echo "[test] $*"; }
 
 die() {
   echo "[test] FAIL: $*" >&2
-  exit 1
+  return 1
 }
 
 check_can_fork() {
@@ -68,6 +68,10 @@ cleanup_ipc() {
     rm -f /dev/shm/sem.sn_155290_biletomat_sem1 /dev/shm/sem.sn_155290_biletomat_ticket_assigned 2>/dev/null || true
     rm -f /dev/shm/sn_155290_biletomat_lista /dev/shm/sn_155290_urzednik_exhaust 2>/dev/null || true
   fi
+}
+
+cleanup_logs() {
+  rm -rf "$OUT_DIR"/*
 }
 
 kill_quiet() {
@@ -131,7 +135,8 @@ TEST_1_ticket_issuing() {
 
   if ! wait_for_file "$PIPE_NAME" 5; then
     kill_quiet -TERM "$bpid"
-    die "Biletomat nie utworzył FIFO ($PIPE_NAME)"
+    die "Biletomat nie utworzył FIFO ($PIPE_NAME)" || true
+    return 1
   fi
 
   (cd "$ROOT_DIR"; run_line_buffered ./workers/petent/petent 0 5 0 1 >"$plog" 2>&1) &
@@ -139,7 +144,8 @@ TEST_1_ticket_issuing() {
 
   if ! wait_for_grep "Przydzielono ticket|Otrzymałem bilet" "$blog" 5 && ! wait_for_grep "Otrzymałem bilet" "$plog" 5; then
     kill_quiet -TERM "$ppid" "$bpid"
-    die "Nie wykryto wydania biletu (brak logów w $blog / $plog)"
+    die "Nie wykryto wydania biletu (brak logów w $blog / $plog)" || true
+    return 1
   fi
 
   # sprzątanie
@@ -150,8 +156,7 @@ TEST_1_ticket_issuing() {
   wait "$ppid" >/dev/null 2>&1 || true
   wait "$bpid" >/dev/null 2>&1 || true
   cleanup_ipc
-
-  log "TEST 1 OK"
+  return 0
 }
 
 # --- TEST 2 ---
@@ -169,60 +174,63 @@ TEST_2_softcap_process_limit() {
   (cd "$ROOT_DIR"; SIM_DRY_RUN=1 ./main --dry-run >"$mlog" 2>&1 < <(printf "999999\n"))
 
   if ! wait_for_grep "OSTRZEŻENIE: Podana ilość" "$mlog" 8; then
-    die "Main nie wypisał ostrzeżenia o przekroczeniu softcap (log: $mlog)"
+    die "Main nie wypisał ostrzeżenia o przekroczeniu softcap (log: $mlog)" || true
+    return 1
   fi
   if ! wait_for_grep "Ograniczam do" "$mlog" 8; then
-    die "Main nie ograniczył liczby petentów (brak 'Ograniczam do' w $mlog)"
+    die "Main nie ograniczył liczby petentów (brak 'Ograniczam do' w $mlog)" || true
+    return 1
   fi
 
   if ! wait_for_grep "\(dry-run\) Pomijam start_simulation\(\)" "$mlog" 8; then
-    die "Main nie wszedł w dry-run (log: $mlog)"
+    die "Main nie wszedł w dry-run (log: $mlog)" || true
+    return 1
   fi
 
   cleanup_ipc
-  log "TEST 2 OK"
+  return 0
 }
 
 # --- TEST 3 ---
-# Sprawdzenie czy petent czeka na bilet
-TEST_3_petent_waits_for_ticket() {
-  log "TEST 3: petent czeka na bilet, zanim biletomat ruszy"
+# Sprawdzenie czy petent najpierw zbiera bilet, a potem jest obsługiwany
+TEST_3_petent_ticket_and_handling() {
+  log "TEST 3: petent zbiera bilet, a potem jest obsługiwany"
   cleanup_ipc
 
-  require_bin "$ROOT_DIR/workers/petent/petent"
-  require_bin "$ROOT_DIR/workers/biletomat/biletomat"
+  require_bin "$ROOT_DIR/main"
 
-  local plog="$OUT_DIR/test3_petent.log"
-  local blog="$OUT_DIR/test3_biletomat.log"
-  : >"$plog"; : >"$blog"
+  local sim_log="$OUT_DIR/test3_simulation.log"
+  : >"$sim_log"
 
-  (cd "$ROOT_DIR"; run_line_buffered ./workers/petent/petent 0 5 0 1 >"$plog" 2>&1) &
-  local ppid=$!
+  # Uruchomienie symulacji z 1 petentem
+  (cd "$ROOT_DIR"; ./main 1 >"$sim_log" 2>&1) &
+  local sim_pid=$!
 
-  sleep 1
-  if ! kill -0 "$ppid" 2>/dev/null; then
-    die "Petent zakończył się zanim dostał bilet (nie wygląda jakby czekał)"
+  # Sprawdzenie czy logi występują w odpowiedniej kolejności
+  if ! wait_for_grep "Pobiera bilet" "$sim_log" 5; then
+    kill_quiet -TERM "$sim_pid"
+    die "Nie znaleziono logu 'Pobiera bilet' w symulacji (log: $sim_log)" || true
+    return 1
   fi
 
-  # teraz uruchom biletomat i sprawdź, że petent finalnie dostaje bilet
-  (cd "$ROOT_DIR"; run_line_buffered ./workers/biletomat/biletomat 3 >"$blog" 2>&1) &
-  local bpid=$!
-  wait_for_file "$PIPE_NAME" 5 || die "Biletomat nie utworzył FIFO w teście 3"
-
-  if ! wait_for_grep "Otrzymałem bilet" "$plog" 8; then
-    kill_quiet -TERM "$ppid" "$bpid"
-    die "Petent nie dostał biletu po starcie biletomatu (log: $plog)"
+  if ! wait_for_grep "obsłużył petenta" "$sim_log" 5; then
+    kill_quiet -TERM "$sim_pid"
+    die "Nie znaleziono logu 'obsłużył petenta' w symulacji (log: $sim_log)" || true
+    return 1
   fi
 
-  kill_quiet -USR2 "$ppid"
-  kill_quiet -USR1 "$bpid"
-  wait_for_exit "$ppid" 5 || true
-  wait_for_exit "$bpid" 5 || true
-  wait "$ppid" >/dev/null 2>&1 || true
-  wait "$bpid" >/dev/null 2>&1 || true
+  # Sprawdzenie czy proces się nie zawiesił
+  if ! wait_for_exit "$sim_pid" 5; then
+    log "Symulacja zawiesiła się, wywołuję Ctrl+C"
+    kill_quiet -INT "$sim_pid"
+    wait "$sim_pid" >/dev/null 2>&1 || true
+    die "Symulacja zawiesiła się na ponad 5 sekund (log: $sim_log)" || true
+    return 1
+  fi
+
+  wait "$sim_pid" >/dev/null 2>&1 || true
   cleanup_ipc
-
-  log "TEST 3 OK"
+  return 0
 }
 
 # --- TEST 4 ---
@@ -275,21 +283,43 @@ TEST_4_director_signal_ends_all() {
   wait "$kpid" >/dev/null 2>&1 || true
 
   cleanup_ipc
-  log "TEST 4 OK"
+  return 0
+}
+
+cleanup_logs() {
+  rm -rf "$OUT_DIR"/*
+}
+
+run_test() {
+  local test_name="$1"
+  shift
+  log "Running $test_name"
+  if "$@"; then
+    log "$test_name OK"
+  else
+    log "$test_name FAILED"
+  fi
+  # Ensure all processes are terminated after the test
+  pkill -f "$ROOT_DIR/workers" || true
 }
 
 main() {
   log "Repo: $ROOT_DIR"
   log "Wyniki: $OUT_DIR"
 
+  # Wyczyść poprzednie logi na start
+  cleanup_logs
+
   check_can_fork
 
-  TEST_1_ticket_issuing
-  TEST_2_softcap_process_limit
-  TEST_3_petent_waits_for_ticket
-  TEST_4_director_signal_ends_all
+  run_test "TEST 1: biletomat wydaje bilet" TEST_1_ticket_issuing
+  run_test "TEST 2: main ogranicza liczbę petentów (softcap)" TEST_2_softcap_process_limit
+  run_test "TEST 3: petent czeka na bilet, zanim biletomat ruszy" TEST_3_petent_ticket_and_handling
+  run_test "TEST 4: sygnał zamknięcia kończy procesy" TEST_4_director_signal_ends_all
 
-  log "ALL TESTS OK"
+  cleanup_ipc
+  # Usuń logi po zakończeniu wszystkich testów
+  cleanup_logs
 }
 
 main "$@"

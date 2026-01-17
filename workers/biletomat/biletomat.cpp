@@ -271,7 +271,6 @@ int main() {
                     }
                 }
 
-                // Log redirection details to daily report file
                 FILE* daily_report = fopen("raport_dzienny.txt", "a");
                 if (daily_report) {
                     fprintf(daily_report, "ID=%d - Skierowanie do wydziału %d - Wystawił: %d\n", packet.pid, packet.typ, getpid());

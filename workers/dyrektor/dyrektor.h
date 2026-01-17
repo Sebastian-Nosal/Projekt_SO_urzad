@@ -13,7 +13,7 @@
  * @param urzednicy Tablica PID-ów urzędników.
  * @param liczba_urzednikow Liczba urzędników.
  */
-void check_and_expel_if_exhausted(int* urzednik_exhausted, pid_t* urzednicy, int liczba_urzednikow);
+void sprawdz_i_obsluz_wyczerpanych(int* urzednik_exhausted, pid_t* urzednicy, int liczba_urzednikow);
 
 /**
  * @brief Wysyła sygnał do wszystkich urzędników.
@@ -22,4 +22,4 @@ void check_and_expel_if_exhausted(int* urzednik_exhausted, pid_t* urzednicy, int
  */
 void wyslij_sygnal_do_urzednikow(int sygnal);
 
-#endif // DYREKTOR_H
+#endif
