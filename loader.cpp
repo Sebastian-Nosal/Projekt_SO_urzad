@@ -1,96 +1,159 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
-#include <vector>
 #include <ctime>
-#include <cstdlib> // Dla funkcji system()
-#include <unistd.h> // Dla fork() i exec()
+#include <unistd.h> // fork() and exec()
+#include <cerrno>
+#include <cstring>
+#include <atomic>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/msg.h>
-#include <cstring> // Dla memset
-#include <semaphore.h> // Dla semaforów POSIX
-#include <fcntl.h> // Dla O_CREAT
-#include <sys/stat.h> // Dla praw dostępu
+#include <semaphore.h> // POSIX semaphores
+#include <fcntl.h> // O_CREAT
+#include <sys/stat.h> // permissions
 #include "utils/losowosc.h"
 #include "config/config.h"
 #include "config/messages.h"
+#include "config/shm.h"
 
-void startProcess(const std::string& name, const std::string& argument = "") {
+void uruchomProces(const std::string& nazwa, const std::string& argument = "") {
     pid_t pid = fork();
 
-    if (pid == 0) { // Proces potomny
-        std::string executable = "./" + name;
+    if (pid == 0) { // proces potomny
+        char cwd[4096] = {0};
+        std::string executable = "./" + nazwa;
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+            executable = std::string(cwd) + "/" + nazwa;
+        }
         if (!argument.empty()) {
-            execl(executable.c_str(), name.c_str(), argument.c_str(), nullptr);
+            execl(executable.c_str(), nazwa.c_str(), argument.c_str(), nullptr);
         } else {
-            execl(executable.c_str(), name.c_str(), nullptr);
+            execl(executable.c_str(), nazwa.c_str(), nullptr);
         }
 
-        // Jeśli exec się nie powiedzie
-        std::cerr << "Error starting process: " << name << std::endl;
+        std::cerr << "{loader, " << getpid() << "} Blad uruchomienia procesu: " << nazwa << " (" << std::strerror(errno) << ")" << std::endl;
         _exit(EXIT_FAILURE);
-    } else if (pid < 0) { // Błąd forka
-        std::cerr << "Fork failed for process: " << name << std::endl;
-    } else { // Proces macierzysty
-        std::cout << "Started process: " << name << " with PID: " << pid << std::endl;
+    } else if (pid < 0) { // blad forka
+        std::cerr << "Fork nieudany dla procesu: " << nazwa << std::endl;
+    } else { // proces macierzysty
+        std::cout << "{loader, " << getpid() << "} Uruchomiono proces: " << nazwa << " PID: " << pid << std::endl;
     }
 }
 
-void startOfficers() {
+void logDev(const SharedState* stan, int wygenerowani, int obsluzeni) {
+    int poza = wygenerowani - stan->clientsInBuilding - obsluzeni;
+    if (poza < 0) poza = 0;
+    std::cout << "{loader, " << getpid() << "} petenci_w_budynku=" << stan->clientsInBuilding
+              << " petenci_poza=" << poza
+              << " petenci_w_kolejce_po_bilet=" << stan->ticketQueueLen
+              << " urzednicy_aktywni=" << stan->activeOfficers
+              << " biletomaty_aktywne=" << stan->activeTicketMachines
+              << std::endl;
+}
+
+void uruchomUrzednikow() {
     for (int i = 0; i < NUM_SA_OFFICERS; ++i) {
-        startProcess("urzednik", "SA");
+        uruchomProces("workers/urzednik/urzednik", "SA");
     }
 
     for (int i = 0; i < NUM_SC_OFFICERS; ++i) {
-        startProcess("urzednik", "SC");
+        uruchomProces("workers/urzednik/urzednik", "SC");
     }
 
     for (int i = 0; i < NUM_KM_OFFICERS; ++i) {
-        startProcess("urzednik", "KM");
+        uruchomProces("workers/urzednik/urzednik", "KM");
     }
 
     for (int i = 0; i < NUM_ML_OFFICERS; ++i) {
-        startProcess("urzednik", "ML");
+        uruchomProces("workers/urzednik/urzednik", "ML");
     } 
 
     for (int i = 0; i < NUM_PD_OFFICERS; ++i) {
-        startProcess("urzednik", "PD");
+        uruchomProces("workers/urzednik/urzednik", "PD");
     } 
 }
 
-void zarzadzaniePetentami(bool& urzadOtwarty, int& iloscPetentow) {
-    const int czasKoniec = 60; // Czas trwania symulacji w sekundach
+void sterujBiletomatami(int mqidOther, SharedState* stan, sem_t* semaphore) {
+    int dlugoscKolejki = 0;
+    int aktywne = 0;
+
+    sem_wait(semaphore);
+    dlugoscKolejki = stan->ticketQueueLen;
+    aktywne = stan->activeTicketMachines;
+    sem_post(semaphore);
+
+    int docelowe = TICKET_MACHINES_MIN;
+    if (dlugoscKolejki > TICKET_MACHINE_K) {
+        docelowe = 2;
+    }
+    if (dlugoscKolejki > 2 * TICKET_MACHINE_K) {
+        docelowe = 3;
+    }
+    if (docelowe == 3 && dlugoscKolejki < TICKET_MACHINE_THIRD_CLOSE) {
+        docelowe = 2;
+    }
+    if (docelowe == 2 && dlugoscKolejki < TICKET_MACHINE_K) {
+        docelowe = 1;
+    }
+
+    if (docelowe != aktywne) {
+        Message ctrl{};
+        ctrl.mtype = static_cast<long>(ProcessMqType::Biletomat);
+        ctrl.senderId = getpid();
+        ctrl.receiverId = 0;
+        ctrl.group = MessageGroup::Biletomat;
+        ctrl.messageType.biletomatType = (docelowe > aktywne)
+            ? BiletomatMessagesEnum::Aktywuj
+            : BiletomatMessagesEnum::Dezaktywuj;
+        ctrl.data1 = docelowe;
+
+        if (msgsnd(mqidOther, &ctrl, sizeof(ctrl) - sizeof(long), 0) == -1) {
+            perror("msgsnd failed");
+        } else {
+            sem_wait(semaphore);
+            stan->activeTicketMachines = docelowe;
+            sem_post(semaphore);
+        }
+    }
+}
+
+void zarzadzaniePetentami(SharedState* stan, sem_t* semaphore, std::atomic<int>* wygenerowani) {
     int czasStart = std::time(nullptr);
 
-    while (std::time(nullptr) - czasStart < czasKoniec) {
-        // Losowanie liczby petentów do wygenerowania
+    while (std::time(nullptr) - czasStart < SIMULATION_DURATION) {
         int liczbaPetentow = losujIlosc(ADD_PETENTS_MIN, ADD_PETENTS_MAX);
 
-        // Sprawdzanie, czy nowa liczba petentów nie przekroczy maksymalnej wartości
-        if (iloscPetentow + liczbaPetentow > MAX_CLIENTS_IN_BUILDING) {
-            liczbaPetentow = MAX_CLIENTS_IN_BUILDING - iloscPetentow;
+        sem_wait(semaphore);
+        int obecni = stan->clientsInBuilding;
+        int miejsca = PETENT_MAX_COUNT_IN_MOMENT - obecni;
+        sem_post(semaphore);
+
+        if (miejsca <= 0) {
+            liczbaPetentow = 0;
+        } else if (liczbaPetentow > miejsca) {
+            liczbaPetentow = miejsca;
         }
 
-        // Tworzenie petentów
         for (int i = 0; i < liczbaPetentow; ++i) {
-            std::cout << "Tworzenie petenta: " << (iloscPetentow + 1) << std::endl;
-            ++iloscPetentow;
+            uruchomProces("workers/petent/petent");
+            ++(*wygenerowani);
         }
 
-        // Losowanie czasu oczekiwania na następne logowanie
         int czasOczekiwania = losujIlosc(INTERVAL_MIN, INTERVAL_MAX);
         std::this_thread::sleep_for(std::chrono::seconds(czasOczekiwania));
     }
 
-    urzadOtwarty = false;
+    sem_wait(semaphore);
+    stan->officeOpen = 0;
+    sem_post(semaphore);
 }
 
-// Funkcja inicjalizująca pamięć współdzieloną
+// Shared memory init
 int initSharedMemory() {
-    int shmid = shmget(SHM_KEY, sizeof(int), IPC_CREAT | 0666);
+    int shmid = shmget(SHM_KEY, sizeof(SharedState), IPC_CREAT | 0666);
     if (shmid == -1) {
         perror("shmget failed");
         exit(EXIT_FAILURE);
@@ -98,9 +161,9 @@ int initSharedMemory() {
     return shmid;
 }
 
-// Funkcja inicjalizująca kolejkę komunikatów
-int initMessageQueue() {
-    int mqid = msgget(MQ_KEY, IPC_CREAT | 0666);
+// Message queue init
+int initMessageQueue(key_t key) {
+    int mqid = msgget(key, IPC_CREAT | 0666);
     if (mqid == -1) {
         perror("msgget failed");
         exit(EXIT_FAILURE);
@@ -108,7 +171,7 @@ int initMessageQueue() {
     return mqid;
 }
 
-// Inicjalizacja semafora dla sekcji krytycznej
+// Semaphore init
 sem_t* initSemaphore() {
     sem_t* semaphore = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
     if (semaphore == SEM_FAILED) {
@@ -119,71 +182,126 @@ sem_t* initSemaphore() {
 }
 
 // Funkcja odbierająca komunikaty z MQ
-void handleMessages(int mqid, int& clientsInBuilding, sem_t* semaphore) {
+void obsluzKomunikaty(int mqidPetent, int mqidOther, SharedState* stan, sem_t* semaphore, std::atomic<int>* obsluzeni) {
     Message msg;
-    while (msgrcv(mqid, &msg, sizeof(msg) - sizeof(long), 0, IPC_NOWAIT) != -1) {
-        std::cout << "Received message from sender: " << msg.senderId << std::endl;
+    while (msgrcv(mqidPetent, &msg, sizeof(msg) - sizeof(long), getpid(), IPC_NOWAIT) != -1) {
+        if (msg.group != MessageGroup::Loader) {
+            continue;
+        }
 
-        // Parsowanie wiadomości
-        if (msg.messageType.petentType == PetentMessagesEnum::WejdzDoBudynku) {
-            sem_wait(semaphore); // Sekcja krytyczna
+        std::cout << "{loader, " << getpid() << "} recv from=" << msg.senderId << " to=" << msg.receiverId << std::endl;
 
-            if (clientsInBuilding < MAX_CLIENTS_IN_BUILDING) {
-                ++clientsInBuilding;
-                std::cout << "Petent PID:" << msg.senderId << " wszedł do budynku. Liczba petentów: " << clientsInBuilding << std::endl;
+        if (msg.messageType.loaderType == LoaderMessagesEnum::NowyPetent) {
+            sem_wait(semaphore);
+            if (stan->clientsInBuilding < PETENT_MAX_COUNT_IN_MOMENT) {
+                ++stan->clientsInBuilding;
+                sem_post(semaphore);
 
-                Message response;
-                response.senderId = getpid(); 
+                Message response{};
+                response.mtype = msg.senderId;
+                response.senderId = getpid();
                 response.receiverId = msg.senderId;
-                response.messageType.petentType = PetentMessagesEnum::OtrzymanoBilet;
+                response.group = MessageGroup::Petent;
+                response.messageType.petentType = PetentMessagesEnum::WejdzDoBudynku;
 
-                if (msgsnd(mqid, &response, sizeof(response) - sizeof(long), 0) == -1) {
+                if (msgsnd(mqidPetent, &response, sizeof(response) - sizeof(long), 0) == -1) {
                     perror("msgsnd failed");
                 }
             } else {
-                std::cout << "Building is full. Client denied entry." << std::endl;
+                sem_post(semaphore);
             }
+        } else if (msg.messageType.loaderType == LoaderMessagesEnum::PetentOpuszczaBudynek) {
+            sem_wait(semaphore);
+            if (stan->clientsInBuilding > 0) {
+                --stan->clientsInBuilding;
+            }
+            sem_post(semaphore);
+            if (msg.data1 == 1) {
+                ++(*obsluzeni);
+            }
+        }
+    }
 
-            sem_post(semaphore); // Koniec sekcji krytycznej
+    while (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(ProcessMqType::Loader), IPC_NOWAIT) != -1) {
+        if (msg.group == MessageGroup::Biletomat) {
+            std::cout << "{loader, " << getpid() << "} recv from=" << msg.senderId << " to=loader" << std::endl;
+            if (msg.messageType.biletomatType == BiletomatMessagesEnum::PetentCzekaNaBilet) {
+                sem_wait(semaphore);
+                stan->ticketQueueLen += 1;
+                sem_post(semaphore);
+            } else if (msg.messageType.biletomatType == BiletomatMessagesEnum::PetentOdebralBilet) {
+                sem_wait(semaphore);
+                if (stan->ticketQueueLen > 0) {
+                    stan->ticketQueueLen -= 1;
+                }
+                sem_post(semaphore);
+            }
         }
     }
 }
 
 int main() {
-    // Inicjalizacja pamięci współdzielonej
+    // Shared memory init
     int shmid = initSharedMemory();
-    int* sharedClients = static_cast<int*>(shmat(shmid, nullptr, 0));
-    if (sharedClients == reinterpret_cast<int*>(-1)) {
+    SharedState* stan = static_cast<SharedState*>(shmat(shmid, nullptr, 0));
+    if (stan == reinterpret_cast<SharedState*>(-1)) {
         perror("shmat failed");
         exit(EXIT_FAILURE);
     }
-    *sharedClients = 0; // Inicjalizacja liczby klientów w pamięci współdzielonej
+    stan->loaderPid = getpid();
+    stan->activeOfficers = NUM_SA_OFFICERS + NUM_SC_OFFICERS + NUM_KM_OFFICERS + NUM_ML_OFFICERS + NUM_PD_OFFICERS;
+    stan->clientsInBuilding = 0;
+    stan->officeOpen = 1;
+    stan->ticketQueueLen = 0;
+    stan->activeTicketMachines = TICKET_MACHINES_MIN;
+    for (int i = 0; i < 5; ++i) {
+        stan->officerStatus[i] = 0;
+    }
 
-    // Inicjalizacja kolejki komunikatów
-    int mqid = initMessageQueue();
+    // Message queue init
+    int mqidPetent = initMessageQueue(MQ_KEY);      // petent queue
+    int mqidOther = initMessageQueue(MQ_KEY + 1);   // other processes queue
 
-    // Inicjalizacja semafora
+    // Semaphore init
     sem_t* semaphore = initSemaphore();
 
-    // Tworzenie pamięci współdzielonej
-    int iloscPetentowWBudynku = 0;
-    bool urzadOtwarty = true;
+    // Start processes
+    uruchomProces("monitoring");
+    uruchomProces("workers/dyrektor/dyrektor");
+    uruchomUrzednikow();
+    uruchomProces("workers/kasa/kasa");
+    for (int i = 0; i < TICKET_MACHINES_MAX; ++i) {
+        uruchomProces("workers/biletomat/biletomat", std::to_string(i));
+    }
 
-    // Uruchamianie procesów
-    startProcess("director");
-    startOfficers();
-    startProcess("cashier");
-    startProcess("ticket_machine");
-
-    // Czekanie na uruchomienie procesów
+    // Wait for processes to initialize
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    // Uruchamianie wątku zarządzania petentami
-    std::thread watekPetentow(zarzadzaniePetentami, std::ref(urzadOtwarty), std::ref(*sharedClients));
+    // Start client management thread
+    std::atomic<int> wygenerowani{0};
+    std::atomic<int> obsluzeni{0};
+    std::thread watekPetentow(zarzadzaniePetentami, stan, semaphore, &wygenerowani);
 
-    // Główna pętla odbierania komunikatów z MQ
-    while (urzadOtwarty) {
-        handleMessages(mqid, *sharedClients, semaphore);
+    // Main MQ loop
+    auto lastLog = std::chrono::steady_clock::now();
+    while (true) {
+        sem_wait(semaphore);
+        int open = stan->officeOpen;
+        sem_post(semaphore);
+        if (!open) {
+            break;
+        }
+        obsluzKomunikaty(mqidPetent, mqidOther, stan, semaphore, &obsluzeni);
+        sterujBiletomatami(mqidOther, stan, semaphore);
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastLog >= std::chrono::seconds(2)) {
+            sem_wait(semaphore);
+            logDev(stan, wygenerowani.load(), obsluzeni.load());
+            sem_post(semaphore);
+            std::cout << "{loader, " << getpid() << "} petenci_wygenerowani=" << wygenerowani.load()
+                      << " petenci_obsluzeni=" << obsluzeni.load() << std::endl;
+            lastLog = now;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -192,17 +310,18 @@ int main() {
     // Wait for all child processes to finish
     while (wait(nullptr) > 0);
 
-    // Sprzątanie pamięci współdzielonej
-    shmdt(sharedClients);
+    // Shared memory cleanup
+    shmdt(stan);
     shmctl(shmid, IPC_RMID, nullptr);
 
-    // Usuwanie kolejki komunikatów
-    msgctl(mqid, IPC_RMID, nullptr);
+    // Message queue cleanup
+    msgctl(mqidPetent, IPC_RMID, nullptr);
+    msgctl(mqidOther, IPC_RMID, nullptr);
 
-    // Usuwanie semafora
+    // Semaphore cleanup
     sem_close(semaphore);
-    sem_unlink("/shm_semaphore");
+    sem_unlink(SEMAPHORE_NAME);
 
-    std::cout << "Symulacja zakończona." << std::endl;
+    std::cout << "Simulation finished." << std::endl;
     return 0;
 }

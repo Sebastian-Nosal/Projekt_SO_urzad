@@ -2,6 +2,7 @@
 #define CONFIG_H
 
 #include <string>
+#include <sys/types.h>
 
 constexpr int SIMULATION_DURATION = 120; // Czas trwania symulacji w sekundach
 
@@ -32,19 +33,23 @@ enum class DepartmentType {
     PD  // Wydział Podatków i Opłat
 };
 
-int PETENT_MAX_COUNT_IN_MOMENT = 1000; // Maksymalna liczba petentów w urzędzie w danym momencie może być zmieniona w mainie z std::in
+extern int PETENT_MAX_COUNT_IN_MOMENT; // Maksymalna liczba petentów w urzędzie w danym momencie może być zmieniona w mainie z std::in
 constexpr int DAILY_CLIENTS = 2000; 
 
 constexpr int MAX_CLIENTS_IN_BUILDING = 50;
+constexpr int TICKET_MACHINES_MAX = 3;
+constexpr int TICKET_MACHINES_MIN = 1;
+constexpr int TICKET_MACHINE_K = MAX_CLIENTS_IN_BUILDING / 3;
+constexpr int TICKET_MACHINE_THIRD_CLOSE = (2 * MAX_CLIENTS_IN_BUILDING) / 3;
 
 const std::string LOG_FILE = "logs/urzad_log.txt";
 const std::string REPORT_FILE = "logs/urzad_report.txt";
 
 // Zakresy dla losowania
-constexpr int INTERVAL_MIN = 1;
+constexpr int INTERVAL_MIN = 10;
 constexpr int INTERVAL_MAX = 20;
 constexpr int ADD_PETENTS_MIN = 0;
-constexpr int ADD_PETENTS_MAX = 55;
+constexpr int ADD_PETENTS_MAX = 30;
 constexpr int WAIT_MIN = 1;
 constexpr int WAIT_MAX = 3;
 

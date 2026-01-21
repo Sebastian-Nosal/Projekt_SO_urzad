@@ -7,6 +7,7 @@ Kolejki Komunikatów
  - SA, SC, KM, ML, PD - kolejki do komunikacji z urzędnikami
  - monitoring - kolejka do logów do plików txt i std::out
  - loader_in - informacje do loadera
+ - realizowane przez dwie kolejki MQ: petent (mtype=PID) i inne procesy (mtype nazwa procesu), urzednicy (mtype skrót wydzialu)
 
 Pamięć współdzielona
  - ilosc_aktywnych_urzednikow - ilu urzędników pracuje (pisarz loader, czytelnicy: dyrektor, biletomat)
@@ -65,6 +66,7 @@ urzednik:
 
 biletomat:
  - na komuniakt od petenta dodaje jego pid do kolejki, incrementuje. Sprawdza czy PID jest VIPem
+ - dlugosc kolejki po bilet = petenci w budynku z nierozpatrzonym mq do biletomatu
  - wysyła komuniakt przez mq do urzędnika. VIP ma priorytet.
  - przy komunikacie od urzędnika o przekierowaniu do innego okienka, wydaje bilet z wysokim priorytetem
  - jeżeli wszyscy urzędnicy danej kategorii się wyczerpali, automatycznie odprawia następnych petentów, nie wydaje biletów
