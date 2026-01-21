@@ -33,7 +33,7 @@ enum class DepartmentType {
     PD  // Wydział Podatków i Opłat
 };
 
-extern int PETENT_MAX_COUNT_IN_MOMENT; // Maksymalna liczba petentów w urzędzie w danym momencie może być zmieniona w mainie z std::in
+extern int PETENT_MAX_COUNT_IN_MOMENT; // Maksymalna liczba petentów jednoczesnie w systemie (zmieniana w main)
 constexpr int DAILY_CLIENTS = 2000; 
 
 constexpr int MAX_CLIENTS_IN_BUILDING = 50;
@@ -52,6 +52,8 @@ constexpr int ADD_PETENTS_MIN = 0;
 constexpr int ADD_PETENTS_MAX = 30;
 constexpr int WAIT_MIN = 1;
 constexpr int WAIT_MAX = 3;
+constexpr int URZEDNIK_DELAY_MS_MIN = 500;
+constexpr int URZEDNIK_DELAY_MS_MAX = 2000;
 
 // Nazwa semafora dla sekcji krytycznej
 constexpr const char* SEMAPHORE_NAME = "/shm_semaphore";

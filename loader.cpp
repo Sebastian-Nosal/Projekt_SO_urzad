@@ -44,11 +44,12 @@ void uruchomProces(const std::string& nazwa, const std::string& argument = "") {
 }
 
 void logDev(const SharedState* stan, int wygenerowani, int obsluzeni) {
-    int poza = wygenerowani - stan->clientsInBuilding - obsluzeni;
+    int poza = stan->livePetents - stan->clientsInBuilding;
     if (poza < 0) poza = 0;
     std::cout << "{loader, " << getpid() << "} petenci_w_budynku=" << stan->clientsInBuilding
               << " petenci_poza=" << poza
               << " petenci_w_kolejce_po_bilet=" << stan->ticketQueueLen
+              << " petenci_zywi=" << stan->livePetents
               << " urzednicy_aktywni=" << stan->activeOfficers
               << " biletomaty_aktywne=" << stan->activeTicketMachines
               << std::endl;
@@ -125,10 +126,18 @@ void zarzadzaniePetentami(SharedState* stan, sem_t* semaphore, std::atomic<int>*
 
     while (std::time(nullptr) - czasStart < SIMULATION_DURATION) {
         int liczbaPetentow = losujIlosc(ADD_PETENTS_MIN, ADD_PETENTS_MAX);
+        int pozostaloDoLimitu = PETENT_MAX_COUNT_IN_MOMENT - wygenerowani->load();
+        if (pozostaloDoLimitu <= 0) {
+            break;
+        }
+        if (liczbaPetentow > pozostaloDoLimitu) {
+            liczbaPetentow = pozostaloDoLimitu;
+        }
 
         sem_wait(semaphore);
         int obecni = stan->clientsInBuilding;
-        int miejsca = PETENT_MAX_COUNT_IN_MOMENT - obecni;
+        int zywi = stan->livePetents;
+        int miejsca = PETENT_MAX_COUNT_IN_MOMENT - zywi;
         sem_post(semaphore);
 
         if (miejsca <= 0) {
@@ -140,6 +149,9 @@ void zarzadzaniePetentami(SharedState* stan, sem_t* semaphore, std::atomic<int>*
         for (int i = 0; i < liczbaPetentow; ++i) {
             uruchomProces("workers/petent/petent");
             ++(*wygenerowani);
+            sem_wait(semaphore);
+            stan->livePetents += 1;
+            sem_post(semaphore);
         }
 
         int czasOczekiwania = losujIlosc(INTERVAL_MIN, INTERVAL_MAX);
@@ -184,40 +196,63 @@ sem_t* initSemaphore() {
 // Funkcja odbierająca komunikaty z MQ
 void obsluzKomunikaty(int mqidPetent, int mqidOther, SharedState* stan, sem_t* semaphore, std::atomic<int>* obsluzeni) {
     Message msg;
-    while (msgrcv(mqidPetent, &msg, sizeof(msg) - sizeof(long), getpid(), IPC_NOWAIT) != -1) {
+    const long entryType = getpid();
+    const long exitType = getpid() + 1;
+
+    while (msgrcv(mqidPetent, &msg, sizeof(msg) - sizeof(long), exitType, IPC_NOWAIT) != -1) {
         if (msg.group != MessageGroup::Loader) {
             continue;
         }
 
         std::cout << "{loader, " << getpid() << "} recv from=" << msg.senderId << " to=" << msg.receiverId << std::endl;
 
-        if (msg.messageType.loaderType == LoaderMessagesEnum::NowyPetent) {
-            sem_wait(semaphore);
-            if (stan->clientsInBuilding < PETENT_MAX_COUNT_IN_MOMENT) {
-                ++stan->clientsInBuilding;
-                sem_post(semaphore);
-
-                Message response{};
-                response.mtype = msg.senderId;
-                response.senderId = getpid();
-                response.receiverId = msg.senderId;
-                response.group = MessageGroup::Petent;
-                response.messageType.petentType = PetentMessagesEnum::WejdzDoBudynku;
-
-                if (msgsnd(mqidPetent, &response, sizeof(response) - sizeof(long), 0) == -1) {
-                    perror("msgsnd failed");
-                }
-            } else {
-                sem_post(semaphore);
-            }
-        } else if (msg.messageType.loaderType == LoaderMessagesEnum::PetentOpuszczaBudynek) {
+        if (msg.messageType.loaderType == LoaderMessagesEnum::PetentOpuszczaBudynek) {
             sem_wait(semaphore);
             if (stan->clientsInBuilding > 0) {
                 --stan->clientsInBuilding;
             }
+            if (stan->livePetents > 0) {
+                --stan->livePetents;
+            }
             sem_post(semaphore);
             if (msg.data1 == 1) {
                 ++(*obsluzeni);
+            }
+        }
+    }
+
+    sem_wait(semaphore);
+    int miejsca = MAX_CLIENTS_IN_BUILDING - stan->clientsInBuilding;
+    sem_post(semaphore);
+
+    if (miejsca > 0) {
+        while (msgrcv(mqidPetent, &msg, sizeof(msg) - sizeof(long), entryType, IPC_NOWAIT) != -1) {
+            if (msg.group != MessageGroup::Loader) {
+                continue;
+            }
+
+            std::cout << "{loader, " << getpid() << "} recv from=" << msg.senderId << " to=" << msg.receiverId << std::endl;
+
+            if (msg.messageType.loaderType == LoaderMessagesEnum::NowyPetent) {
+                sem_wait(semaphore);
+                if (stan->clientsInBuilding < MAX_CLIENTS_IN_BUILDING) {
+                    ++stan->clientsInBuilding;
+                    sem_post(semaphore);
+
+                    Message response{};
+                    response.mtype = msg.senderId;
+                    response.senderId = getpid();
+                    response.receiverId = msg.senderId;
+                    response.group = MessageGroup::Petent;
+                    response.messageType.petentType = PetentMessagesEnum::WejdzDoBudynku;
+
+                    if (msgsnd(mqidPetent, &response, sizeof(response) - sizeof(long), 0) == -1) {
+                        perror("msgsnd failed");
+                    }
+                } else {
+                    sem_post(semaphore);
+                    break;
+                }
             }
         }
     }
@@ -240,6 +275,30 @@ void obsluzKomunikaty(int mqidPetent, int mqidOther, SharedState* stan, sem_t* s
     }
 }
 
+void odrzucOczekujacychPetentow(int mqidPetent, int loaderPid) {
+    Message msg;
+    while (msgrcv(mqidPetent, &msg, sizeof(msg) - sizeof(long), loaderPid, IPC_NOWAIT) != -1) {
+        if (msg.group != MessageGroup::Loader) {
+            continue;
+        }
+        if (msg.messageType.loaderType != LoaderMessagesEnum::NowyPetent) {
+            continue;
+        }
+
+        Message response{};
+        response.mtype = msg.senderId;
+        response.senderId = loaderPid;
+        response.receiverId = msg.senderId;
+        response.group = MessageGroup::Petent;
+        response.messageType.petentType = PetentMessagesEnum::Odprawiony;
+
+        if (msgsnd(mqidPetent, &response, sizeof(response) - sizeof(long), 0) == -1) {
+            perror("msgsnd failed");
+        }
+    }
+}
+
+
 int main() {
     // Shared memory init
     int shmid = initSharedMemory();
@@ -251,10 +310,11 @@ int main() {
     stan->loaderPid = getpid();
     stan->activeOfficers = NUM_SA_OFFICERS + NUM_SC_OFFICERS + NUM_KM_OFFICERS + NUM_ML_OFFICERS + NUM_PD_OFFICERS;
     stan->clientsInBuilding = 0;
+    stan->livePetents = 0;
     stan->officeOpen = 1;
     stan->ticketQueueLen = 0;
     stan->activeTicketMachines = TICKET_MACHINES_MIN;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         stan->officerStatus[i] = 0;
     }
 
@@ -304,6 +364,8 @@ int main() {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+
+    odrzucOczekujacychPetentow(mqidPetent, getpid());
 
     watekPetentow.join();
 

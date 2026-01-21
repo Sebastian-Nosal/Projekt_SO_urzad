@@ -52,7 +52,7 @@ int main() {
 		const char* prefix = typLogu(msg.messageType.monitoringType);
 		std::string text = msg.data3;
 
-		std::cout << "{monitoring} " << prefix << " " << text << std::endl;
+		//std::cout << "{monitoring} " << prefix << " " << text << std::endl;
 		if (logFile.is_open()) {
 			logFile << "{monitoring} " << prefix << " " << text << std::endl;
 			logFile.flush();

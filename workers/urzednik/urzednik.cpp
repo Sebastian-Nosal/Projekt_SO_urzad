@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <thread>
+#include <chrono>
 
 #include "config/config.h"
 #include "config/messages.h"
@@ -50,6 +52,7 @@ int maxPrzyjecDlaWydzialu(const std::string& wydzial) {
 }
 
 int losujPrzekierowanie() {
+	// 1=SC, 2=KM, 3=ML, 4=PD
 	int los = losujIlosc(1, 4);
 	return los;
 }
@@ -101,6 +104,7 @@ int main(int argc, char** argv) {
 		std::cerr << "Nieznany wydzial" << std::endl;
 		return 1;
 	}
+	std::cout << "{urzednik, " << getpid() << "} wydzial=" << wydzial << std::endl;
 
 	std::signal(SIGUSR1, obsluzSigusr1);
 
@@ -123,8 +127,38 @@ int main(int argc, char** argv) {
 
 	int obsluzeni = 0;
 	bool wyczerpany = false;
+	int saRola = 0; // 0=nie SA, 1=primary, 2=secondary
+
+	if (wydzial == "SA") {
+		sem_wait(semaphore);
+		if (stan->officerStatus[0] == 0) {
+			stan->officerStatus[0] = getpid();
+			saRola = 1;
+		} else if (stan->officerStatus[1] == 0) {
+			stan->officerStatus[1] = getpid();
+			saRola = 2;
+		} else {
+			saRola = 2;
+		}
+		sem_post(semaphore);
+	}
 
 	while (true) {
+		if (wydzial == "SA" && saRola == 2) {
+			sem_wait(semaphore);
+			int primaryPid = stan->officerStatus[0];
+			if (primaryPid == 0) {
+				stan->officerStatus[0] = getpid();
+				stan->officerStatus[1] = 0;
+				saRola = 1;
+				sem_post(semaphore);
+			} else {
+				sem_post(semaphore);
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				continue;
+			}
+		}
+
 		Message msg{};
 		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(mtypeDlaWydzialu(wydzial)), 0) == -1) {
 			continue;
@@ -143,6 +177,9 @@ int main(int argc, char** argv) {
 		std::cout << "{urzednik, " << getpid() << "} petent=" << pidPetenta << std::endl;
 		wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::WezwanoDoUrzednika);
 		std::cout << "{urzednik, " << getpid() << "} send to pid=" << pidPetenta << std::endl;
+
+		int opoznienieMs = losujIlosc(URZEDNIK_DELAY_MS_MIN, URZEDNIK_DELAY_MS_MAX);
+		std::this_thread::sleep_for(std::chrono::milliseconds(opoznienieMs));
 
 		if (wyczerpany) {
 			wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Odprawiony);
@@ -182,6 +219,13 @@ int main(int argc, char** argv) {
 			if (stan->activeOfficers > 0) {
 				stan->activeOfficers -= 1;
 			}
+			if (wydzial == "SA") {
+				if (saRola == 1 && stan->officerStatus[0] == getpid()) {
+					stan->officerStatus[0] = 0;
+				} else if (saRola == 2 && stan->officerStatus[1] == getpid()) {
+					stan->officerStatus[1] = 0;
+				}
+			}
 			sem_post(semaphore);
 			wyslijDoBiletomatu(mqidOther);
 		}
@@ -189,6 +233,16 @@ int main(int argc, char** argv) {
 		if (konczPoBiezacym) {
 			break;
 		}
+	}
+
+	if (wydzial == "SA") {
+		sem_wait(semaphore);
+		if (stan->officerStatus[0] == getpid()) {
+			stan->officerStatus[0] = 0;
+		} else if (stan->officerStatus[1] == getpid()) {
+			stan->officerStatus[1] = 0;
+		}
+		sem_post(semaphore);
 	}
 
 	shmdt(stan);

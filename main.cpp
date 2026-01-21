@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <sys/resource.h>
 #include "config/config.h"
 
 int main() {
@@ -15,6 +16,17 @@ int main() {
 			}
 		} catch (...) {
 			// pozostaw domyslna wartosc z configu
+		}
+	}
+
+	struct rlimit lim;
+	if (getrlimit(RLIMIT_NPROC, &lim) == 0 && lim.rlim_cur != RLIM_INFINITY) {
+		int limitProc = static_cast<int>(lim.rlim_cur);
+		int bezpieczny = limitProc > 10 ? (limitProc - 10) : limitProc;
+		if (bezpieczny > 0 && PETENT_MAX_COUNT_IN_MOMENT > bezpieczny) {
+			std::cout << "Uwaga: limit procesow uzytkownika to " << limitProc
+			          << ", zmniejszam maksymalna liczbe petentow do " << bezpieczny << "\n";
+			PETENT_MAX_COUNT_IN_MOMENT = bezpieczny;
 		}
 	}
 

@@ -175,21 +175,43 @@ int main() {
 	}
 
 	Message response{};
-	if (msgrcv(mqidPetent, &response, sizeof(response) - sizeof(long), getpid(), 0) == -1) {
-		perror("msgrcv failed");
-		shmdt(stan);
-		return 1;
-	}
-	std::cout << "{petent, " << getpid() << "} recv from pid=" << response.senderId << std::endl;
+	while (true) {
+		if (msgrcv(mqidPetent, &response, sizeof(response) - sizeof(long), getpid(), 0) == -1) {
+			perror("msgrcv failed");
+			shmdt(stan);
+			return 1;
+		}
+		std::cout << "{petent, " << getpid() << "} recv from pid=" << response.senderId << std::endl;
 
-	if (response.group == MessageGroup::Petent && response.messageType.petentType == PetentMessagesEnum::WejdzDoBudynku) {
-		wyslijMonitoring(mqidOther, getpid(), "petent entered building");
-		std::cout << "{petent, " << getpid() << "} entered building" << std::endl;
-	} else {
-		wyslijMonitoring(mqidOther, getpid(), "petent denied entry");
-		std::cout << "{petent, " << getpid() << "} denied entry" << std::endl;
-		shmdt(stan);
-		return 0;
+		if (response.group != MessageGroup::Petent) {
+			continue;
+		}
+
+		if (response.messageType.petentType == PetentMessagesEnum::WejdzDoBudynku) {
+			wyslijMonitoring(mqidOther, getpid(), "petent entered building");
+			std::cout << "{petent, " << getpid() << "} entered building" << std::endl;
+			break;
+		}
+
+		if (response.messageType.petentType == PetentMessagesEnum::Odprawiony) {
+			wyslijMonitoring(mqidOther, getpid(), "petent denied entry");
+			std::cout << "{petent, " << getpid() << "} denied entry" << std::endl;
+
+			Message exitMsg{};
+			exitMsg.mtype = loaderPid + 1;
+			exitMsg.senderId = getpid();
+			exitMsg.receiverId = loaderPid;
+			exitMsg.group = MessageGroup::Loader;
+			exitMsg.messageType.loaderType = LoaderMessagesEnum::PetentOpuszczaBudynek;
+			exitMsg.data1 = 0;
+
+			if (msgsnd(mqidPetent, &exitMsg, sizeof(exitMsg) - sizeof(long), 0) == -1) {
+				perror("msgsnd failed");
+			}
+
+			shmdt(stan);
+			return 0;
+		}
 	}
 
 	// request ticket for SA (1)
@@ -221,7 +243,17 @@ int main() {
 				break;
 			case PetentMessagesEnum::IdzDoInnegoUrzednika:
 				wyslijMonitoring(mqidOther, getpid(), "petent redirected to another office");
-				std::cout << "{petent, " << getpid() << "} redirected" << std::endl;
+				{
+					std::string wydzial = "SC";
+					switch (msg.data1) {
+						case 1: wydzial = "SC"; break;
+						case 2: wydzial = "KM"; break;
+						case 3: wydzial = "ML"; break;
+						case 4: wydzial = "PD"; break;
+						default: wydzial = "SC"; break;
+					}
+					std::cout << "{petent, " << getpid() << "} redirected wydzial=" << wydzial << std::endl;
+				}
 				wyslijDoBiletomatu(mqidOther, getpid(), 0, BiletomatMessagesEnum::PetentCzekaNaBilet, msg.data1);
 				odbierzBilet(mqidPetent, getpid());
 				break;
@@ -247,7 +279,7 @@ int main() {
 	}
 
 	Message exitMsg{};
-	exitMsg.mtype = loaderPid;
+	exitMsg.mtype = loaderPid + 1;
 	exitMsg.senderId = getpid();
 	exitMsg.receiverId = loaderPid;
 	exitMsg.group = MessageGroup::Loader;

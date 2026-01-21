@@ -134,13 +134,13 @@ int main(int argc, char** argv) {
 				std::cout << "{biletomat, " << getpid() << "} send to loader ticket out from=" << msg.senderId << std::endl;
 
 				Message toOfficer{};
-				DepartmentMqType deptType = DepartmentMqType::SA;
+				DepartmentMqType deptType = DepartmentMqType::SC;
 				switch (msg.data1) {
-					case 2: deptType = DepartmentMqType::SC; break;
-					case 3: deptType = DepartmentMqType::KM; break;
-					case 4: deptType = DepartmentMqType::ML; break;
-					case 5: deptType = DepartmentMqType::PD; break;
-					default: deptType = DepartmentMqType::SA; break;
+					case 1: deptType = DepartmentMqType::SC; break;
+					case 2: deptType = DepartmentMqType::KM; break;
+					case 3: deptType = DepartmentMqType::ML; break;
+					case 4: deptType = DepartmentMqType::PD; break;
+					default: deptType = DepartmentMqType::SC; break;
 				}
 				toOfficer.mtype = static_cast<long>(deptType);
 				toOfficer.senderId = msg.senderId;
@@ -148,7 +148,16 @@ int main(int argc, char** argv) {
 				toOfficer.group = MessageGroup::Biletomat;
 				toOfficer.messageType.biletomatType = BiletomatMessagesEnum::WydanoBiletCzekaj;
 				msgsnd(mqidOther, &toOfficer, sizeof(toOfficer) - sizeof(long), 0);
-				std::cout << "{biletomat, " << getpid() << "} send to urzednik from=" << msg.senderId << std::endl;
+				std::string wydzial = "SC";
+				switch (msg.data1) {
+					case 1: wydzial = "SC"; break;
+					case 2: wydzial = "KM"; break;
+					case 3: wydzial = "ML"; break;
+					case 4: wydzial = "PD"; break;
+					default: wydzial = "SC"; break;
+				}
+				std::cout << "{biletomat, " << getpid() << "} send to urzednik from=" << msg.senderId
+				          << " wydzial=" << wydzial << std::endl;
 			}
 		}
 

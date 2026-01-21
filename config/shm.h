@@ -7,6 +7,7 @@ struct SharedState {
     int loaderPid;
     int activeOfficers;
     int clientsInBuilding;
+    int livePetents;
     int officeOpen;
     int ticketQueueLen;
     int activeTicketMachines;
