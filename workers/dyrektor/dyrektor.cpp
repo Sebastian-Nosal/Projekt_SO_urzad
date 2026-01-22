@@ -4,6 +4,11 @@
 #include <sys/shm.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <thread>
+#include <chrono>
 
 #include "config/config.h"
 #include "config/shm.h"
@@ -24,6 +29,15 @@ void obsluzSigusr1(int) {
 void obsluzSigusr2(int) {
 	wyslijSigusr2 = 1;
 }
+
+sem_t* initSemaphore() {
+	sem_t* semaphore = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
+	if (semaphore == SEM_FAILED) {
+		perror("sem_open failed");
+		exit(EXIT_FAILURE);
+	}
+	return semaphore;
+}
 }
 
 int main() {
@@ -43,6 +57,9 @@ int main() {
 		return 1;
 	}
 
+	sem_t* semaphore = initSemaphore();
+	bool shutdownSent = false;
+
 	while (dziala) {
 		if (wyslijSigusr1) {
 			wyslijSigusr1 = 0;
@@ -56,8 +73,27 @@ int main() {
 			kill(0, SIGUSR2);
 		}
 
-		pause();
+		sem_wait(semaphore);
+		int open = stan->officeOpen;
+		int livePetents = stan->livePetents;
+		int activeOfficers = stan->activeOfficers;
+		sem_post(semaphore);
+
+		if (!open && !shutdownSent) {
+			shutdownSent = true;
+			// koniec symulacji: petenci SIGUSR2, urzednicy SIGUSR1
+			kill(0, SIGUSR2);
+			kill(0, SIGUSR1);
+		}
+
+		if (shutdownSent && livePetents == 0 && activeOfficers == 0) {
+			break;
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	}
+
+	sem_close(semaphore);
 
 	shmdt(stan);
 	return 0;

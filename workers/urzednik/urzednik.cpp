@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <thread>
 #include <chrono>
+#include <cerrno>
 
 #include "config/config.h"
 #include "config/messages.h"
@@ -40,6 +41,19 @@ sem_t* initSemaphore() {
 		exit(EXIT_FAILURE);
 	}
 	return semaphore;
+}
+
+void wyslijMonitoring(int mqidOther, int senderId, const std::string& text) {
+	Message msg{};
+	msg.mtype = static_cast<long>(ProcessMqType::Monitoring);
+	msg.senderId = senderId;
+	msg.receiverId = 0;
+	msg.group = MessageGroup::Monitoring;
+	msg.messageType.monitoringType = MonitoringMessagesEnum::Log;
+	std::snprintf(msg.data3, sizeof(msg.data3), "%s", text.c_str());
+	if (msgsnd(mqidOther, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
+		perror("msgsnd failed");
+	}
 }
 
 int maxPrzyjecDlaWydzialu(const std::string& wydzial) {
@@ -129,6 +143,8 @@ int main(int argc, char** argv) {
 	bool wyczerpany = false;
 	int saRola = 0; // 0=nie SA, 1=primary, 2=secondary
 
+	wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " start wydzial=" + wydzial + " limit=" + std::to_string(limit));
+
 	if (wydzial == "SA") {
 		sem_wait(semaphore);
 		if (stan->officerStatus[0] == 0) {
@@ -160,7 +176,17 @@ int main(int argc, char** argv) {
 		}
 
 		Message msg{};
-		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(mtypeDlaWydzialu(wydzial)), 0) == -1) {
+		bool gotMsg = false;
+		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), getpid(), IPC_NOWAIT) != -1) {
+			gotMsg = true;
+		} else if (errno != ENOMSG && errno != EINTR) {
+			perror("msgrcv failed");
+		} else if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(mtypeDlaWydzialu(wydzial)), 0) != -1) {
+			gotMsg = true;
+		} else if (errno != EINTR) {
+			perror("msgrcv failed");
+		}
+		if (!gotMsg) {
 			continue;
 		}
 
@@ -174,16 +200,17 @@ int main(int argc, char** argv) {
 		}
 
 		int pidPetenta = msg.senderId;
-		std::cout << "{urzednik, " << getpid() << "} petent=" << pidPetenta << std::endl;
+		std::cout << "{urzednik, " << getpid() << "} call petent=" << pidPetenta << " wydzial=" << wydzial << std::endl;
+		wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " przyjął petenta=" + std::to_string(pidPetenta));
 		wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::WezwanoDoUrzednika);
-		std::cout << "{urzednik, " << getpid() << "} send to pid=" << pidPetenta << std::endl;
 
 		int opoznienieMs = losujIlosc(URZEDNIK_DELAY_MS_MIN, URZEDNIK_DELAY_MS_MAX);
 		std::this_thread::sleep_for(std::chrono::milliseconds(opoznienieMs));
 
 		if (wyczerpany) {
+			wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " odrzucił petenta=" + std::to_string(pidPetenta) + " (limit wyczerpany)");
 			wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Odprawiony);
-			std::cout << "{urzednik, " << getpid() << "} rejected" << std::endl;
+			std::cout << "{urzednik, " << getpid() << "} rejected petent=" << pidPetenta << " reason=limit" << std::endl;
 			continue;
 		}
 
@@ -191,20 +218,24 @@ int main(int argc, char** argv) {
 			int los = losujIlosc(1, 100);
 			if (los <= 40) {
 				int przekierowanie = losujPrzekierowanie();
+				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " przekierował petenta=" + std::to_string(pidPetenta) + " do wydziału=" + std::to_string(przekierowanie));
 				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::IdzDoInnegoUrzednika, przekierowanie);
-				std::cout << "{urzednik, " << getpid() << "} redirected" << std::endl;
+				std::cout << "{urzednik, " << getpid() << "} redirected petent=" << pidPetenta << " to=" << przekierowanie << std::endl;
 			} else {
+				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " obsłużył petenta=" + std::to_string(pidPetenta));
 				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Obsluzony);
-				std::cout << "{urzednik, " << getpid() << "} served" << std::endl;
+				std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
 			}
 		} else {
 			int los = losujIlosc(1, 100);
 			if (los <= 10) {
-				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::IdzDoKasy);
-				std::cout << "{urzednik, " << getpid() << "} to cashier" << std::endl;
+				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " skierował petenta=" + std::to_string(pidPetenta) + " do kasy");
+				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::IdzDoKasy, getpid(), static_cast<int>(mtypeDlaWydzialu(wydzial)));
+				std::cout << "{urzednik, " << getpid() << "} to cashier petent=" << pidPetenta << std::endl;
 			} else {
+				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " obsłużył petenta=" + std::to_string(pidPetenta));
 				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Obsluzony);
-				std::cout << "{urzednik, " << getpid() << "} served" << std::endl;
+				std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
 			}
 		}
 
@@ -214,6 +245,7 @@ int main(int argc, char** argv) {
 
 		if (obsluzeni >= limit) {
 			wyczerpany = true;
+			wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " wyczerpał limit obsługi");
 			std::cout << "{urzednik, " << getpid() << "} exhausted" << std::endl;
 			sem_wait(semaphore);
 			if (stan->activeOfficers > 0) {
@@ -231,6 +263,7 @@ int main(int argc, char** argv) {
 		}
 
 		if (konczPoBiezacym) {
+			wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " kończy po bieżącym petencie");
 			break;
 		}
 	}

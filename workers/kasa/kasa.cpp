@@ -1,5 +1,7 @@
 #include <iostream>
 #include <csignal>
+#include <string>
+#include <cerrno>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <unistd.h>
@@ -22,6 +24,19 @@ int initMessageQueue(key_t key) {
 	}
 	return mqid;
 }
+
+void wyslijMonitoring(int mqidOther, int senderId, const std::string& text) {
+	Message msg{};
+	msg.mtype = static_cast<long>(ProcessMqType::Monitoring);
+	msg.senderId = senderId;
+	msg.receiverId = 0;
+	msg.group = MessageGroup::Monitoring;
+	msg.messageType.monitoringType = MonitoringMessagesEnum::Log;
+	std::snprintf(msg.data3, sizeof(msg.data3), "%s", text.c_str());
+	if (msgsnd(mqidOther, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
+		perror("msgsnd failed");
+	}
+}
 }
 
 int main() {
@@ -33,6 +48,10 @@ int main() {
 	while (dziala) {
 		Message msg{};
 		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(ProcessMqType::Kasa), 0) == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			perror("msgrcv failed");
 			continue;
 		}
 
@@ -41,19 +60,23 @@ int main() {
 		}
 
 		std::cout << "{kasa, " << getpid() << "} petent=" << msg.senderId << std::endl;
+		wyslijMonitoring(mqidOther, getpid(), "Kasa przyjęła petenta=" + std::to_string(msg.senderId));
 
+		int officerPid = msg.data1;
 		Message response{};
-		response.mtype = msg.senderId;
-		response.senderId = getpid();
-		response.receiverId = msg.senderId;
+		response.mtype = officerPid > 0 ? officerPid : static_cast<long>(msg.data2);
+		response.senderId = msg.senderId; // petent id
+		response.receiverId = officerPid;
 		response.group = MessageGroup::Petent;
 		response.messageType.petentType = PetentMessagesEnum::WezwanoDoUrzednika;
-		response.data1 = msg.data1;
+		response.data1 = msg.senderId;
+		response.data2 = msg.data2;
 
-		if (msgsnd(mqidPetent, &response, sizeof(response) - sizeof(long), 0) == -1) {
+		if (msgsnd(mqidOther, &response, sizeof(response) - sizeof(long), 0) == -1) {
 			perror("msgsnd failed");
 		}
-		std::cout << "{kasa, " << getpid() << "} odeslany do pid=" << msg.senderId << std::endl;
+		std::cout << "{kasa, " << getpid() << "} odeslany do urzednika=" << officerPid << " petent=" << msg.senderId << std::endl;
+		wyslijMonitoring(mqidOther, getpid(), "Kasa odesłała petenta=" + std::to_string(msg.senderId) + " do urzędnika=" + std::to_string(officerPid));
 	}
 
 	return 0;

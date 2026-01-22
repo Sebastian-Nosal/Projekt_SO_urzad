@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <csignal>
+#include <cerrno>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 
@@ -42,6 +43,10 @@ int main() {
 	while (dziala) {
 		Message msg{};
 		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(ProcessMqType::Monitoring), 0) == -1) {
+			if (errno == EINTR) {
+				continue;
+			}
+			perror("msgrcv failed");
 			continue;
 		}
 
@@ -54,7 +59,7 @@ int main() {
 
 		//std::cout << "{monitoring} " << prefix << " " << text << std::endl;
 		if (logFile.is_open()) {
-			logFile << "{monitoring} " << prefix << " " << text << std::endl;
+			logFile << "\033[34m\033[1m[monitoring]\033[0m" << prefix << " " << text << std::endl;
 			logFile.flush();
 		}
 	}

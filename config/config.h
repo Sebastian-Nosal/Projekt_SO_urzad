@@ -34,22 +34,23 @@ enum class DepartmentType {
 };
 
 extern int PETENT_MAX_COUNT_IN_MOMENT; // Maksymalna liczba petentów jednoczesnie w systemie (zmieniana w main)
-constexpr int DAILY_CLIENTS = 2000; 
+constexpr int DAILY_CLIENTS = 500; 
 
-constexpr int MAX_CLIENTS_IN_BUILDING = 50;
+constexpr int MAX_CLIENTS_IN_BUILDING = 10;
 constexpr int TICKET_MACHINES_MAX = 3;
 constexpr int TICKET_MACHINES_MIN = 1;
 constexpr int TICKET_MACHINE_K = MAX_CLIENTS_IN_BUILDING / 3;
 constexpr int TICKET_MACHINE_THIRD_CLOSE = (2 * MAX_CLIENTS_IN_BUILDING) / 3;
+constexpr int CHILD_CHANCE_PERCENT = 3;
 
 const std::string LOG_FILE = "logs/urzad_log.txt";
 const std::string REPORT_FILE = "logs/urzad_report.txt";
 
 // Zakresy dla losowania
-constexpr int INTERVAL_MIN = 10;
-constexpr int INTERVAL_MAX = 20;
+constexpr int INTERVAL_MIN = 1;
+constexpr int INTERVAL_MAX = 10;
 constexpr int ADD_PETENTS_MIN = 0;
-constexpr int ADD_PETENTS_MAX = 30;
+constexpr int ADD_PETENTS_MAX = 20;
 constexpr int WAIT_MIN = 1;
 constexpr int WAIT_MAX = 3;
 constexpr int URZEDNIK_DELAY_MS_MIN = 500;
