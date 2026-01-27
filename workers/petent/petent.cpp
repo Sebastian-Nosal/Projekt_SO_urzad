@@ -85,18 +85,18 @@ void monitorujSemaforKolejkiPetenta(const std::string& where) {
 
 void monitorujKolejkeWyjscia(int mqid, const std::string& where) {
 	if (mqid < 0) {
-		wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia niedostepna gdzie=" + where);
+		//wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia niedostepna gdzie=" + where);
 		return;
 	}
 	msqid_ds ds{};
 	if (msgctl(mqid, IPC_STAT, &ds) == -1) {
-		wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia blad odczytu gdzie=" + where);
+		//wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia blad odczytu gdzie=" + where);
 		return;
 	}
 	int wolne = static_cast<int>(EXIT_QUEUE_LIMIT) - static_cast<int>(ds.msg_qnum);
 	if (wolne < 0) wolne = 0;
 	const char* stan = (wolne <= 0) ? "ZAMKNIETA" : "OTWARTA";
-	wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia gdzie=" + where + " stan=" + stan + " wolne=" + std::to_string(wolne));
+	//wyslijMonitoring(mqidOther, getpid(), "kolejka wyjscia gdzie=" + where + " stan=" + stan + " wolne=" + std::to_string(wolne));
 }
 
 bool czekajNaSlotWyjscia(int mqid) {
