@@ -1,8 +1,16 @@
+/**
+ * @file messages.h
+ * @brief Definicje typów wiadomości i struktur IPC.
+ */
+
 #ifndef MESSAGES_H
 #define MESSAGES_H
 
 #include <cstdint>
 
+/**
+ * @brief Grupy komunikatów w systemie.
+ */
 enum class MessageGroup : uint8_t {
     Loader,
     Petent,
@@ -10,6 +18,9 @@ enum class MessageGroup : uint8_t {
     Monitoring
 };
 
+/**
+ * @brief Typy kolejek dla procesów.
+ */
 enum class ProcessMqType : long {
     Loader = 1,
     Biletomat = 2,
@@ -18,6 +29,9 @@ enum class ProcessMqType : long {
     Dyrektor = 5
 };
 
+/**
+ * @brief Typy kolejek dla wydziałów.
+ */
 enum class DepartmentMqType : long {
     SA = 101,
     SC = 102,
@@ -26,7 +40,9 @@ enum class DepartmentMqType : long {
     PD = 105
 };
 
-// Enumy dla typów wiadomości
+/**
+ * @brief Typy wiadomości dla biletomatu.
+ */
 enum class BiletomatMessagesEnum {
     Aktywuj,
     Dezaktywuj,
@@ -37,6 +53,9 @@ enum class BiletomatMessagesEnum {
     ZamykanieUrzeduOdejdz
 };
 
+/**
+ * @brief Typy wiadomości dla petenta.
+ */
 enum class PetentMessagesEnum {
     WejdzDoBudynku,
     OtrzymanoBilet,
@@ -48,21 +67,36 @@ enum class PetentMessagesEnum {
     OpuscBudynek
 };
 
+/**
+ * @brief Typy wiadomości monitoringu.
+ */
 enum class MonitoringMessagesEnum {
     Log,
     Error,
     Debug
 };
 
+/**
+ * @brief Typy wiadomości loadera.
+ */
 enum class LoaderMessagesEnum {
     NowyPetent,
     PetentOpuszczaBudynek
 };
 
+/**
+ * @brief Flaga VIP w polu `flags`.
+ */
 constexpr int MESSAGE_FLAG_VIP = 1;
+
+/**
+ * @brief Offset typu mtype dla kolejki VIP w wydziałach.
+ */
 constexpr long VIP_DEPT_MTYPE_OFFSET = 1000;
 
-// Struktura wiadomości
+/**
+ * @brief Struktura wiadomości przesyłanej przez kolejki IPC.
+ */
 struct Message {
     long mtype;
     int senderId;

@@ -1,8 +1,16 @@
+/**
+ * @file shm.h
+ * @brief Definicje pamięci współdzielonej.
+ */
+
 #ifndef SHM_H
 #define SHM_H
 
 #include <cstdint>
 
+/**
+ * @brief Stan współdzielony między procesami symulacji.
+ */
 struct SharedState {
     int loaderPid;
     int activeOfficers;

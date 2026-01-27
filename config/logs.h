@@ -1,8 +1,16 @@
+/**
+ * @file logs.h
+ * @brief Stałe wzorców tekstów logów.
+ */
+
 #ifndef LOGS_H
 #define LOGS_H
 
 #include <string>
 
+/**
+ * @brief Przestrzeń nazw ze wzorcami logów.
+ */
 namespace Logs {
 
 // Schematy logów

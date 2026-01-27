@@ -1,3 +1,8 @@
+/**
+ * @file sem_log.h
+ * @brief Pomocnicze funkcje logujące stan semaforów.
+ */
+
 #pragma once
 
 #include <semaphore.h>
@@ -6,6 +11,10 @@
 #include <chrono>
 #include <cerrno>
 
+/**
+ * @brief Sprawdza, czy można zalogować kolejną informację (rate limit).
+ * @return `true` jeśli logowanie jest dozwolone.
+ */
 inline bool semShouldLog() {
     using clock = std::chrono::steady_clock;
     static thread_local clock::time_point last = clock::now() - std::chrono::seconds(1);
@@ -17,6 +26,13 @@ inline bool semShouldLog() {
     return true;
 }
 
+/**
+ * @brief Loguje stan semafora.
+ * @param tag Etykieta operacji (np. WAIT, ACQUIRED).
+ * @param name Nazwa semafora.
+ * @param where Miejsce wywołania (np. nazwa funkcji).
+ * @param value Wartość semafora.
+ */
 inline void semLogState(const char* tag, const char* name, const char* where, int value) {
     if (!semShouldLog()) {
         return;
@@ -32,6 +48,12 @@ inline void semLogState(const char* tag, const char* name, const char* where, in
     */
 }
 
+/**
+ * @brief Czeka na semafor i loguje stan, gdy blokuje się.
+ * @param sem Wskaźnik do semafora.
+ * @param name Nazwa semafora.
+ * @param where Miejsce wywołania.
+ */
 inline void semWaitLogged(sem_t* sem, const char* name, const char* where) {
     if (!sem || sem == SEM_FAILED) {
         return;
@@ -55,6 +77,12 @@ inline void semWaitLogged(sem_t* sem, const char* name, const char* where) {
     semLogState("ACQUIRED", name, where, value);
 }
 
+/**
+ * @brief Zwolnienie semafora.
+ * @param sem Wskaźnik do semafora.
+ * @param name Nazwa semafora.
+ * @param where Miejsce wywołania.
+ */
 inline void semPostLogged(sem_t* sem, const char* name, const char* where) {
     sem_post(sem);
 }

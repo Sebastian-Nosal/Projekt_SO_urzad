@@ -18,7 +18,6 @@
 #include "config/messages.h"
 #include "config/shm.h"
 
-namespace {
 /**
  * @brief Inicjalizuje kolejkę wiadomości o danym kluczu.
  * @param key Klucz System V IPC.
@@ -58,29 +57,28 @@ void cleanupIpc(int mqidPetent, int mqidOther, int shmid, sem_t* sem);
 bool waitForMsg(int mqid, long type, Message& out, int timeoutMs);
 
 /**
- * @brief Test procesu `monitoring`.
+ * @brief Testuje zachowanie FIFO kolejki komunikatów.
  * @return `true` jeśli test zakończył się sukcesem.
  */
-bool testMonitoring();
+bool testMessageOrder();
 
 /**
- * @brief Test procesu `biletomat`.
+ * @brief Testuje liczbę wiadomości w kolejce IPC.
  * @return `true` jeśli test zakończył się sukcesem.
  */
-bool testBiletomat();
+bool testQueueLength();
 
 /**
- * @brief Test procesu `petent`.
+ * @brief Testuje uruchomienie biletomatu i odpowiedź na żądanie biletu.
  * @return `true` jeśli test zakończył się sukcesem.
  */
-bool testPetent();
+bool testBiletomatStart();
 
 /**
- * @brief Test procesu `urzednik`.
+ * @brief Test wykrywania zakleszczeń na podstawie logów z `main_all`.
  * @return `true` jeśli test zakończył się sukcesem.
  */
-bool testUrzednik();
-}
+bool testDeadlockDetection();
 
 /**
  * @brief Główny punkt wejścia testów IPC.
