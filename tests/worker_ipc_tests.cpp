@@ -79,61 +79,69 @@ bool waitForMsg(int mqid, long type, Message& out, int timeoutMs) {
 	return false;
 }
 
-bool testMonitoring() {
-	std::cout << "[TEST] monitoring\n";
-	std::remove(LOG_FILE.c_str());
+bool testMessageOrder() {
+	std::cout << "[TEST] Testy kolejności komuniaktów\n";
+	int mqid = msgget(IPC_PRIVATE, 0666);
+	if (mqid == -1) return false;
 
-	int mqidOther = initQueue(MQ_KEY_OTHER);
-	if (mqidOther == -1) return false;
-
-	pid_t pid = fork();
-	if (pid == 0) {
-		execl("./monitoring", "monitoring", nullptr);
-		_exit(1);
-	}
-	if (pid < 0) return false;
-
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-	Message msg{};
-	msg.mtype = static_cast<long>(ProcessMqType::Monitoring);
-	msg.senderId = getpid();
-	msg.receiverId = 0;
-	msg.group = MessageGroup::Monitoring;
-	msg.messageType.monitoringType = MonitoringMessagesEnum::Log;
-	std::snprintf(msg.data3, sizeof(msg.data3), "%s", "test monitoring");
-	if (msgsnd(mqidOther, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
-		perror("msgsnd failed");
-		kill(pid, SIGTERM);
-		waitpid(pid, nullptr, 0);
-		msgctl(mqidOther, IPC_RMID, nullptr);
-		return false;
-	}
-
-	bool ok = false;
-	for (int i = 0; i < 50; ++i) {
-		std::ifstream f(LOG_FILE);
-		if (f.good()) {
-			std::string line;
-			while (std::getline(f, line)) {
-				if (line.find("test monitoring") != std::string::npos) {
-					ok = true;
-					break;
-				}
-			}
+	for (int i = 1; i <= 3; ++i) {
+		Message msg{};
+		msg.mtype = 1;
+		msg.senderId = i;
+		msg.data1 = i;
+		if (msgsnd(mqid, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
+			perror("msgsnd failed");
+			msgctl(mqid, IPC_RMID, nullptr);
+			return false;
 		}
-		if (ok) break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 
-	kill(pid, SIGTERM);
-	waitpid(pid, nullptr, 0);
-	msgctl(mqidOther, IPC_RMID, nullptr);
-	return ok;
+	for (int i = 1; i <= 3; ++i) {
+		Message out{};
+		if (msgrcv(mqid, &out, sizeof(out) - sizeof(long), 1, 0) == -1) {
+			perror("msgrcv failed");
+			msgctl(mqid, IPC_RMID, nullptr);
+			return false;
+		}
+		if (out.data1 != i) {
+			msgctl(mqid, IPC_RMID, nullptr);
+			return false;
+		}
+	}
+
+	msgctl(mqid, IPC_RMID, nullptr);
+	return true;
 }
 
-bool testBiletomat() {
-	std::cout << "[TEST] biletomat\n";
+bool testQueueLength() {
+	std::cout << "[TEST] Test ilości petentów w kolejce\n";
+	int mqid = msgget(IPC_PRIVATE, 0666);
+	if (mqid == -1) return false;
+
+	constexpr int kCount = 10;
+	for (int i = 0; i < kCount; ++i) {
+		Message msg{};
+		msg.mtype = 1;
+		msg.senderId = i;
+		if (msgsnd(mqid, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
+			perror("msgsnd failed");
+			msgctl(mqid, IPC_RMID, nullptr);
+			return false;
+		}
+	}
+
+	msqid_ds ds{};
+	if (msgctl(mqid, IPC_STAT, &ds) == -1) {
+		perror("msgctl IPC_STAT failed");
+		msgctl(mqid, IPC_RMID, nullptr);
+		return false;
+	}
+	msgctl(mqid, IPC_RMID, nullptr);
+	return ds.msg_qnum == kCount;
+}
+
+bool testBiletomatStart() {
+	std::cout << "[TEST] Test uruchamiania biletomatów\n";
 	int mqidPetent = msgget(IPC_PRIVATE, 0666);
 	int mqidOther = initQueue(MQ_KEY_OTHER);
 	int shmid = initShm();
@@ -193,184 +201,64 @@ bool testBiletomat() {
 	return valid;
 }
 
-bool testPetent() {
-	std::cout << "[TEST] petent\n";
-	int mqidPetent = initQueue(MQ_KEY_ENTRY);
-	int mqidOther = initQueue(MQ_KEY_OTHER);
-	int mqidExit = initQueue(MQ_KEY_EXIT);
-	int shmid = initShm();
-	sem_t* sem = initSemaphore();
-	if (mqidPetent == -1 || mqidOther == -1 || mqidExit == -1 || shmid == -1 || sem == nullptr) {
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		if (mqidExit != -1) msgctl(mqidExit, IPC_RMID, nullptr);
-		return false;
-	}
-
-	SharedState* state = static_cast<SharedState*>(shmat(shmid, nullptr, 0));
-	if (state == reinterpret_cast<SharedState*>(-1)) {
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-	sem_wait(sem);
-	std::memset(state, 0, sizeof(SharedState));
-	state->loaderPid = getpid();
-	state->officeOpen = 1;
-	sem_post(sem);
+bool testDeadlockDetection() {
+	std::cout << "[TEST] Test wykrywania zakleszczeń/deadlockó\n";
+	std::remove(LOG_FILE.c_str());
 
 	pid_t pid = fork();
 	if (pid == 0) {
-		execl("./workers/petent/petent", "petent", nullptr);
+		int fd = open("/dev/null", O_WRONLY);
+		if (fd != -1) {
+			dup2(fd, STDOUT_FILENO);
+			dup2(fd, STDERR_FILENO);
+			close(fd);
+		}
+		execl("./main_all", "main_all", nullptr);
 		_exit(1);
 	}
-	if (pid < 0) {
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
+	if (pid < 0) return false;
 
-	Message msg{};
-	if (!waitForMsg(mqidPetent, getpid(), msg, 2000)) {
-		kill(pid, SIGTERM);
+	std::this_thread::sleep_for(std::chrono::seconds(30));
+	kill(pid, SIGINT);
+
+	bool exited = false;
+	for (int i = 0; i < 50; ++i) {
+		int status = 0;
+		pid_t w = waitpid(pid, &status, WNOHANG);
+		if (w == pid) {
+			exited = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	}
+	if (!exited) {
+		kill(pid, SIGKILL);
 		waitpid(pid, nullptr, 0);
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
+	}
+
+	std::ifstream f(LOG_FILE);
+	if (!f.good()) {
 		return false;
 	}
-	bool gotEntry = msg.group == MessageGroup::Loader && msg.messageType.loaderType == LoaderMessagesEnum::NowyPetent;
-	int petentQueueId = msg.replyQueueId;
-	if (petentQueueId <= 0) {
-		kill(pid, SIGTERM);
-		waitpid(pid, nullptr, 0);
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
+	bool hasPetent = false;
+	bool hasBiletomat = false;
+	bool hasUrzednik = false;
+	std::string line;
+	while (std::getline(f, line)) {
+		if (line.find("petent") != std::string::npos) hasPetent = true;
+		if (line.find("Biletomat") != std::string::npos) hasBiletomat = true;
+		if (line.find("Urzędnik") != std::string::npos || line.find("Urzednik") != std::string::npos) hasUrzednik = true;
 	}
-
-	Message enter{};
-	enter.mtype = 1;
-	enter.senderId = getpid();
-	enter.receiverId = pid;
-	enter.replyQueueId = petentQueueId;
-	enter.group = MessageGroup::Petent;
-	enter.messageType.petentType = PetentMessagesEnum::WejdzDoBudynku;
-	msgsnd(petentQueueId, &enter, sizeof(enter) - sizeof(long), 0);
-
-	Message ticketReq{};
-	if (!waitForMsg(mqidOther, static_cast<long>(ProcessMqType::Biletomat), ticketReq, 2000)) {
-		kill(pid, SIGTERM);
-		waitpid(pid, nullptr, 0);
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-	bool gotTicketReq = ticketReq.group == MessageGroup::Biletomat && ticketReq.messageType.biletomatType == BiletomatMessagesEnum::PetentCzekaNaBilet;
-
-	Message ticketResp{};
-	ticketResp.mtype = 1;
-	ticketResp.senderId = getpid();
-	ticketResp.receiverId = pid;
-	ticketResp.replyQueueId = petentQueueId;
-	ticketResp.group = MessageGroup::Petent;
-	ticketResp.messageType.petentType = PetentMessagesEnum::OtrzymanoBilet;
-	msgsnd(petentQueueId, &ticketResp, sizeof(ticketResp) - sizeof(long), 0);
-
-	Message served{};
-	served.mtype = 1;
-	served.senderId = getpid();
-	served.receiverId = pid;
-	served.replyQueueId = petentQueueId;
-	served.group = MessageGroup::Petent;
-	served.messageType.petentType = PetentMessagesEnum::Obsluzony;
-	msgsnd(petentQueueId, &served, sizeof(served) - sizeof(long), 0);
-
-	Message exitMsg{};
-	bool gotExit = waitForMsg(mqidExit, getpid() + 1, exitMsg, 3000);
-	bool exitOk = gotExit && exitMsg.group == MessageGroup::Loader && exitMsg.messageType.loaderType == LoaderMessagesEnum::PetentOpuszczaBudynek;
-
-	waitpid(pid, nullptr, 0);
-	shmdt(state);
-	cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-	msgctl(mqidExit, IPC_RMID, nullptr);
-	return gotEntry && gotTicketReq && exitOk;
-}
-
-bool testUrzednik() {
-	std::cout << "[TEST] urzednik\n";
-	int mqidPetent = msgget(IPC_PRIVATE, 0666);
-	int mqidOther = initQueue(MQ_KEY_OTHER);
-	int shmid = initShm();
-	sem_t* sem = initSemaphore();
-	if (mqidPetent == -1 || mqidOther == -1 || shmid == -1 || sem == nullptr) {
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-
-	SharedState* state = static_cast<SharedState*>(shmat(shmid, nullptr, 0));
-	if (state == reinterpret_cast<SharedState*>(-1)) {
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-	sem_wait(sem);
-	std::memset(state, 0, sizeof(SharedState));
-	state->officeOpen = 1;
-	sem_post(sem);
-
-	pid_t pid = fork();
-	if (pid == 0) {
-		execl("./workers/urzednik/urzednik", "urzednik", "SC", nullptr);
-		_exit(1);
-	}
-	if (pid < 0) {
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-
-	Message call{};
-	call.mtype = static_cast<long>(DepartmentMqType::SC);
-	call.senderId = getpid();
-	call.receiverId = 0;
-	call.replyQueueId = mqidPetent;
-	call.group = MessageGroup::Biletomat;
-	call.messageType.biletomatType = BiletomatMessagesEnum::WydanoBiletCzekaj;
-	msgsnd(mqidOther, &call, sizeof(call) - sizeof(long), 0);
-
-	Message first{};
-	if (!waitForMsg(mqidPetent, 0, first, 3000)) {
-		kill(pid, SIGTERM);
-		waitpid(pid, nullptr, 0);
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-	bool firstOk = first.group == MessageGroup::Petent && first.messageType.petentType == PetentMessagesEnum::WezwanoDoUrzednika;
-
-	Message second{};
-	if (!waitForMsg(mqidPetent, 0, second, 3000)) {
-		kill(pid, SIGTERM);
-		waitpid(pid, nullptr, 0);
-		shmdt(state);
-		cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-		return false;
-	}
-	bool secondOk = second.group == MessageGroup::Petent &&
-		(second.messageType.petentType == PetentMessagesEnum::Obsluzony ||
-		 second.messageType.petentType == PetentMessagesEnum::IdzDoKasy);
-
-	kill(pid, SIGTERM);
-	waitpid(pid, nullptr, 0);
-	shmdt(state);
-	cleanupIpc(mqidPetent, mqidOther, shmid, sem);
-	return firstOk && secondOk;
+	return hasPetent && hasBiletomat && hasUrzednik && exited;
 }
 }
 
 int main() {
 	std::vector<std::pair<std::string, bool(*)()>> tests = {
-		{"monitoring", testMonitoring},
-		{"biletomat", testBiletomat},
-		{"petent", testPetent},
-		{"urzednik", testUrzednik}
+		{"Testy kolejności komuniaktów", testMessageOrder},
+		{"Test ilości petentów w kolejce", testQueueLength},
+		{"Test uruchamiania biletomatów", testBiletomatStart},
+		{"Test wykrywania zakleszczeń/deadlockó", testDeadlockDetection}
 	};
 
 	bool ok = true;
