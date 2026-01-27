@@ -21,6 +21,7 @@
 #include "utils/losowosc.h"
 #include "utils/mq_semaphore.h"
 #include "utils/sem_log.h"
+#include "petent.h"
 
 namespace {
 
@@ -117,13 +118,6 @@ bool czekajNaSlotWyjscia(int mqid) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 }
-
-struct ChildLogQueue {
-	std::mutex mutex;
-	std::condition_variable cv;
-	std::deque<std::string> queue;
-	bool done = false;
-};
 
 void dzieckoPracuj(ChildLogQueue* state, int mqidOther, int parentPid) {
 	if (!state) {
