@@ -59,11 +59,16 @@ enum class LoaderMessagesEnum {
     PetentOpuszczaBudynek
 };
 
+constexpr int MESSAGE_FLAG_VIP = 1;
+constexpr long VIP_DEPT_MTYPE_OFFSET = 1000;
+
 // Struktura wiadomości
 struct Message {
     long mtype;
     int senderId;
     int receiverId;
+    int replyQueueId;
+    int flags;
     MessageGroup group;
     union {
         BiletomatMessagesEnum biletomatType;

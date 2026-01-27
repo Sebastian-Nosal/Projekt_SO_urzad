@@ -12,6 +12,8 @@ struct SharedState {
     int ticketQueueLen;
     int activeTicketMachines;
     int officerStatus[6];
+    int exhaustedCount[5];
+    int exhaustedDept[5];
 };
 
 #endif // SHM_H

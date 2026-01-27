@@ -14,21 +14,31 @@ for dir in workers/*/; do
     srcs=$(find "$dir" -name '*.cpp')
     if [ -n "$srcs" ]; then
         echo "Kompiluję $name..."
-        g++ -std=c++11 -Wall -O2 $srcs $UTILS_SRCS config/config.cpp -I. -Iheaders -Iutils -I$dir -o "$dir$name"
+        g++ -std=c++11 -Wall -O2 $srcs $UTILS_SRCS -I. -Iheaders -Iutils -I$dir -o "$dir$name"
     fi
 done
 
 if [ -f main.cpp ]; then
     echo "Kompiluję main..."
-    g++ -std=c++11 -Wall -O2 main.cpp $UTILS_SRCS config/config.cpp -I. -Iheaders -Iutils -o main
+    g++ -std=c++11 -Wall -O2 main.cpp $UTILS_SRCS -I. -Iheaders -Iutils -o main
+fi
+
+if [ -f main_all.cpp ]; then
+    echo "Kompiluję main_all..."
+    g++ -std=c++11 -Wall -O2 main_all.cpp $UTILS_SRCS -I. -Iheaders -Iutils -o main_all
 fi
 
 if [ -f loader.cpp ]; then
     echo "Kompiluję loader..."
-    g++ -std=c++11 -Wall -O2 loader.cpp $UTILS_SRCS config/config.cpp -I. -Iheaders -Iutils -o loader
+    g++ -std=c++11 -Wall -O2 loader.cpp $UTILS_SRCS -I. -Iheaders -Iutils -o loader
+fi
+
+if [ -f loader_all.cpp ]; then
+    echo "Kompiluję loader_all..."
+    g++ -std=c++11 -Wall -O2 loader_all.cpp $UTILS_SRCS -I. -Iheaders -Iutils -o loader_all
 fi
 
 if [ -d utils ]; then
     echo "Kompiluję monitoring..."
-    g++ -std=c++11 -Wall -O2 utils/monitoring.cpp config/config.cpp -I. -Iheaders -Iutils -o monitoring
+    g++ -std=c++11 -Wall -O2 utils/monitoring.cpp $UTILS_SRCS -I. -Iheaders -Iutils -o monitoring
 fi

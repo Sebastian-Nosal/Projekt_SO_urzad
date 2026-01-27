@@ -17,9 +17,12 @@
 #include "config/messages.h"
 #include "config/shm.h"
 #include "utils/losowosc.h"
+#include "utils/mq_semaphore.h"
+#include "utils/sem_log.h"
 
 namespace {
 volatile sig_atomic_t konczPoBiezacym = 0;
+sem_t* g_otherQueueSem = nullptr;
 
 void obsluzSigusr1(int) {
 	konczPoBiezacym = 1;
@@ -51,8 +54,12 @@ void wyslijMonitoring(int mqidOther, int senderId, const std::string& text) {
 	msg.group = MessageGroup::Monitoring;
 	msg.messageType.monitoringType = MonitoringMessagesEnum::Log;
 	std::snprintf(msg.data3, sizeof(msg.data3), "%s", text.c_str());
+	if (!otherQueueTryWaitToSend(g_otherQueueSem)) {
+		return;
+	}
 	if (msgsnd(mqidOther, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
 		perror("msgsnd failed");
+		otherQueueReleaseSlot(g_otherQueueSem);
 	}
 }
 
@@ -71,17 +78,20 @@ int losujPrzekierowanie() {
 	return los;
 }
 
-void wyslijDoPetenta(int mqidPetent, int pid, PetentMessagesEnum typ, int data1 = 0, int data2 = 0) {
+void wyslijDoPetenta(int petentQueueId, int pid, PetentMessagesEnum typ, int data1 = 0, int data2 = 0) {
 	Message msg{};
-	msg.mtype = pid;
+	msg.mtype = 1;
 	msg.senderId = getpid();
 	msg.receiverId = pid;
+	msg.replyQueueId = petentQueueId;
 	msg.group = MessageGroup::Petent;
 	msg.messageType.petentType = typ;
 	msg.data1 = data1;
 	msg.data2 = data2;
-	if (msgsnd(mqidPetent, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
-		perror("msgsnd failed");
+	if (petentQueueId > 0) {
+		if (msgsnd(petentQueueId, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
+			perror("msgsnd failed");
+		}
 	}
 }
 
@@ -92,8 +102,12 @@ void wyslijDoBiletomatu(int mqidOther) {
 	msg.receiverId = 0;
 	msg.group = MessageGroup::Biletomat;
 	msg.messageType.biletomatType = BiletomatMessagesEnum::UrzednikWyczerpanyOdejdz;
+	if (!otherQueueWaitToSend(g_otherQueueSem)) {
+		return;
+	}
 	if (msgsnd(mqidOther, &msg, sizeof(msg) - sizeof(long), 0) == -1) {
 		perror("msgsnd failed");
+		otherQueueReleaseSlot(g_otherQueueSem);
 	}
 }
 
@@ -103,6 +117,22 @@ DepartmentMqType mtypeDlaWydzialu(const std::string& wydzial) {
 	if (wydzial == "KM") return DepartmentMqType::KM;
 	if (wydzial == "ML") return DepartmentMqType::ML;
 	return DepartmentMqType::PD;
+}
+
+int indeksWydzialu(const std::string& wydzial) {
+	if (wydzial == "SA") return 0;
+	if (wydzial == "SC") return 1;
+	if (wydzial == "KM") return 2;
+	if (wydzial == "ML") return 3;
+	return 4;
+}
+
+int liczbaUrzednikowDlaWydzialu(const std::string& wydzial) {
+	if (wydzial == "SA") return NUM_SA_OFFICERS;
+	if (wydzial == "SC") return NUM_SC_OFFICERS;
+	if (wydzial == "KM") return NUM_KM_OFFICERS;
+	if (wydzial == "ML") return NUM_ML_OFFICERS;
+	return NUM_PD_OFFICERS;
 }
 }
 
@@ -118,12 +148,12 @@ int main(int argc, char** argv) {
 		std::cerr << "Nieznany wydzial" << std::endl;
 		return 1;
 	}
-	std::cout << "{urzednik, " << getpid() << "} wydzial=" << wydzial << std::endl;
+	// std::cout << "{urzednik, " << getpid() << "} wydzial=" << wydzial << std::endl;
 
 	std::signal(SIGUSR1, obsluzSigusr1);
 
-	int mqidPetent = initMessageQueue(MQ_KEY);
-	int mqidOther = initMessageQueue(MQ_KEY + 1);
+	int mqidOther = initMessageQueue(MQ_KEY_OTHER);
+	setOtherQueueId(mqidOther);
 
 	int shmid = shmget(SHM_KEY, sizeof(SharedState), IPC_CREAT | 0666);
 	if (shmid == -1) {
@@ -138,6 +168,7 @@ int main(int argc, char** argv) {
 	}
 
 	sem_t* semaphore = initSemaphore();
+	g_otherQueueSem = openOtherQueueSemaphore(false);
 
 	int obsluzeni = 0;
 	bool wyczerpany = false;
@@ -146,7 +177,7 @@ int main(int argc, char** argv) {
 	wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " start wydzial=" + wydzial + " limit=" + std::to_string(limit));
 
 	if (wydzial == "SA") {
-		sem_wait(semaphore);
+		semWaitLogged(semaphore, SEMAPHORE_NAME, __func__);
 		if (stan->officerStatus[0] == 0) {
 			stan->officerStatus[0] = getpid();
 			saRola = 1;
@@ -156,20 +187,20 @@ int main(int argc, char** argv) {
 		} else {
 			saRola = 2;
 		}
-		sem_post(semaphore);
+		semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 	}
 
 	while (true) {
 		if (wydzial == "SA" && saRola == 2) {
-			sem_wait(semaphore);
+			semWaitLogged(semaphore, SEMAPHORE_NAME, __func__);
 			int primaryPid = stan->officerStatus[0];
 			if (primaryPid == 0) {
 				stan->officerStatus[0] = getpid();
 				stan->officerStatus[1] = 0;
 				saRola = 1;
-				sem_post(semaphore);
+				semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 			} else {
-				sem_post(semaphore);
+				semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 				continue;
 			}
@@ -177,16 +208,25 @@ int main(int argc, char** argv) {
 
 		Message msg{};
 		bool gotMsg = false;
-		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), getpid(), IPC_NOWAIT) != -1) {
+		long vipType = static_cast<long>(mtypeDlaWydzialu(wydzial)) + VIP_DEPT_MTYPE_OFFSET;
+		if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), vipType, IPC_NOWAIT) != -1) {
+			otherQueueReleaseSlot(g_otherQueueSem);
 			gotMsg = true;
 		} else if (errno != ENOMSG && errno != EINTR) {
 			perror("msgrcv failed");
-		} else if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(mtypeDlaWydzialu(wydzial)), 0) != -1) {
+		} else if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), getpid(), IPC_NOWAIT) != -1) {
+			otherQueueReleaseSlot(g_otherQueueSem);
 			gotMsg = true;
-		} else if (errno != EINTR) {
+		} else if (errno != ENOMSG && errno != EINTR) {
+			perror("msgrcv failed");
+		} else if (msgrcv(mqidOther, &msg, sizeof(msg) - sizeof(long), static_cast<long>(mtypeDlaWydzialu(wydzial)), IPC_NOWAIT) != -1) {
+			otherQueueReleaseSlot(g_otherQueueSem);
+			gotMsg = true;
+		} else if (errno != ENOMSG && errno != EINTR) {
 			perror("msgrcv failed");
 		}
 		if (!gotMsg) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			continue;
 		}
 
@@ -200,17 +240,18 @@ int main(int argc, char** argv) {
 		}
 
 		int pidPetenta = msg.senderId;
-		std::cout << "{urzednik, " << getpid() << "} call petent=" << pidPetenta << " wydzial=" << wydzial << std::endl;
+		int petentQueueId = msg.replyQueueId;
+		// std::cout << "{urzednik, " << getpid() << "} call petent=" << pidPetenta << " wydzial=" << wydzial << std::endl;
 		wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " przyjął petenta=" + std::to_string(pidPetenta));
-		wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::WezwanoDoUrzednika);
+		wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::WezwanoDoUrzednika);
 
 		int opoznienieMs = losujIlosc(URZEDNIK_DELAY_MS_MIN, URZEDNIK_DELAY_MS_MAX);
 		std::this_thread::sleep_for(std::chrono::milliseconds(opoznienieMs));
 
 		if (wyczerpany) {
 			wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " odrzucił petenta=" + std::to_string(pidPetenta) + " (limit wyczerpany)");
-			wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Odprawiony);
-			std::cout << "{urzednik, " << getpid() << "} rejected petent=" << pidPetenta << " reason=limit" << std::endl;
+			wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::Odprawiony);
+			// std::cout << "{urzednik, " << getpid() << "} rejected petent=" << pidPetenta << " reason=limit" << std::endl;
 			continue;
 		}
 
@@ -219,37 +260,45 @@ int main(int argc, char** argv) {
 			if (los <= 40) {
 				int przekierowanie = losujPrzekierowanie();
 				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " przekierował petenta=" + std::to_string(pidPetenta) + " do wydziału=" + std::to_string(przekierowanie));
-				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::IdzDoInnegoUrzednika, przekierowanie);
-				std::cout << "{urzednik, " << getpid() << "} redirected petent=" << pidPetenta << " to=" << przekierowanie << std::endl;
+				wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::IdzDoInnegoUrzednika, przekierowanie);
+				// std::cout << "{urzednik, " << getpid() << "} redirected petent=" << pidPetenta << " to=" << przekierowanie << std::endl;
 			} else {
 				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " obsłużył petenta=" + std::to_string(pidPetenta));
-				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Obsluzony);
-				std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
+				wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::Obsluzony);
+				// std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
 			}
 		} else {
 			int los = losujIlosc(1, 100);
 			if (los <= 10) {
 				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " skierował petenta=" + std::to_string(pidPetenta) + " do kasy");
-				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::IdzDoKasy, getpid(), static_cast<int>(mtypeDlaWydzialu(wydzial)));
-				std::cout << "{urzednik, " << getpid() << "} to cashier petent=" << pidPetenta << std::endl;
+				wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::IdzDoKasy, getpid(), static_cast<int>(mtypeDlaWydzialu(wydzial)));
+				// std::cout << "{urzednik, " << getpid() << "} to cashier petent=" << pidPetenta << std::endl;
 			} else {
 				wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " obsłużył petenta=" + std::to_string(pidPetenta));
-				wyslijDoPetenta(mqidPetent, pidPetenta, PetentMessagesEnum::Obsluzony);
-				std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
+				wyslijDoPetenta(petentQueueId, pidPetenta, PetentMessagesEnum::Obsluzony);
+				// std::cout << "{urzednik, " << getpid() << "} served petent=" << pidPetenta << std::endl;
 			}
 		}
 
 		obsluzeni++;
-		std::cout << "{urzednik, " << getpid() << "} obsluzeni=" << obsluzeni
-		          << " pozostalo=" << (limit - obsluzeni) << std::endl;
+		// std::cout << "{urzednik, " << getpid() << "} obsluzeni=" << obsluzeni
+		//           << " pozostalo=" << (limit - obsluzeni) << std::endl;
 
 		if (obsluzeni >= limit) {
 			wyczerpany = true;
 			wyslijMonitoring(mqidOther, getpid(), "Urzędnik " + std::to_string(getpid()) + " wyczerpał limit obsługi");
-			std::cout << "{urzednik, " << getpid() << "} exhausted" << std::endl;
-			sem_wait(semaphore);
+			// std::cout << "{urzednik, " << getpid() << "} exhausted" << std::endl;
+			semWaitLogged(semaphore, SEMAPHORE_NAME, __func__);
 			if (stan->activeOfficers > 0) {
 				stan->activeOfficers -= 1;
+			}
+			int idx = indeksWydzialu(wydzial);
+			if (idx >= 0 && idx < 5) {
+				stan->exhaustedCount[idx] += 1;
+				int total = liczbaUrzednikowDlaWydzialu(wydzial);
+				if (stan->exhaustedCount[idx] >= total) {
+					stan->exhaustedDept[idx] = 1;
+				}
 			}
 			if (wydzial == "SA") {
 				if (saRola == 1 && stan->officerStatus[0] == getpid()) {
@@ -258,7 +307,7 @@ int main(int argc, char** argv) {
 					stan->officerStatus[1] = 0;
 				}
 			}
-			sem_post(semaphore);
+			semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 			wyslijDoBiletomatu(mqidOther);
 		}
 
@@ -269,13 +318,13 @@ int main(int argc, char** argv) {
 	}
 
 	if (wydzial == "SA") {
-		sem_wait(semaphore);
+		semWaitLogged(semaphore, SEMAPHORE_NAME, __func__);
 		if (stan->officerStatus[0] == getpid()) {
 			stan->officerStatus[0] = 0;
 		} else if (stan->officerStatus[1] == getpid()) {
 			stan->officerStatus[1] = 0;
 		}
-		sem_post(semaphore);
+		semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 	}
 
 	shmdt(stan);

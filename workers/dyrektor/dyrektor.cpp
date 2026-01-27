@@ -12,6 +12,7 @@
 
 #include "config/config.h"
 #include "config/shm.h"
+#include "utils/sem_log.h"
 
 namespace {
 volatile sig_atomic_t dziala = 1;
@@ -20,6 +21,8 @@ volatile sig_atomic_t wyslijSigusr2 = 0;
 
 void obsluzSigint(int) {
 	dziala = 0;
+	wyslijSigusr1 = 1;
+	wyslijSigusr2 = 1;
 }
 
 void obsluzSigusr1(int) {
@@ -60,7 +63,7 @@ int main() {
 	sem_t* semaphore = initSemaphore();
 	bool shutdownSent = false;
 
-	while (dziala) {
+	while (dziala || wyslijSigusr1 || wyslijSigusr2) {
 		if (wyslijSigusr1) {
 			wyslijSigusr1 = 0;
 			// SIGUSR1: urzednicy koncza po biezacym petencie
@@ -73,11 +76,11 @@ int main() {
 			kill(0, SIGUSR2);
 		}
 
-		sem_wait(semaphore);
+		semWaitLogged(semaphore, SEMAPHORE_NAME, __func__);
 		int open = stan->officeOpen;
 		int livePetents = stan->livePetents;
 		int activeOfficers = stan->activeOfficers;
-		sem_post(semaphore);
+		semPostLogged(semaphore, SEMAPHORE_NAME, __func__);
 
 		if (!open && !shutdownSent) {
 			shutdownSent = true;
@@ -87,6 +90,10 @@ int main() {
 		}
 
 		if (shutdownSent && livePetents == 0 && activeOfficers == 0) {
+			break;
+		}
+
+		if (!open && !dziala) {
 			break;
 		}
 

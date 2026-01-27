@@ -1,10 +1,10 @@
-#ifndef CONFIG_H
-#define CONFIG_H
+#ifndef CONFIG_ALL_H
+#define CONFIG_ALL_H
 
 #include <string>
 #include <sys/types.h>
 
-constexpr int SIMULATION_DURATION = 120; // Czas trwania symulacji w sekundach
+constexpr int SIMULATION_DURATION = 1800; // Czas trwania symulacji w sekundach
 
 constexpr int NUM_SA_OFFICERS = 2; // Wydział Spraw Administracyjnych
 constexpr int NUM_SC_OFFICERS = 1; // Urząd Stanu Cywilnego
@@ -33,8 +33,7 @@ enum class DepartmentType {
     PD  // Wydział Podatków i Opłat
 };
 
-constexpr  int PETENT_MAX_COUNT_IN_MOMENT = 10;
-constexpr  int DAILY_CLIENTS = 200; 
+constexpr int PETENTS_AMOUNT = 5000;
 
 constexpr int MAX_CLIENTS_IN_BUILDING = 10;
 constexpr int TICKET_MACHINES_MAX = 3;
@@ -54,7 +53,7 @@ constexpr int ADD_PETENTS_MIN = 0;
 constexpr int ADD_PETENTS_MAX = 20;
 constexpr int WAIT_MIN = 1;
 constexpr int WAIT_MAX = 3;
-constexpr int WAIT_FRUSTRATED = 40;
+constexpr int WAIT_FRUSTRATED = 5;
 constexpr int TIME_FRUSTRATED = WAIT_FRUSTRATED;
 constexpr int URZEDNIK_DELAY_MS_MIN = 500;
 constexpr int URZEDNIK_DELAY_MS_MAX = 2000;
@@ -77,4 +76,4 @@ constexpr key_t MQ_KEY_ENTRY = 290155;
 constexpr key_t MQ_KEY_OTHER = 290156;
 constexpr key_t MQ_KEY_EXIT = 290157;
 
-#endif // CONFIG_H
+#endif // CONFIG_ALL_H

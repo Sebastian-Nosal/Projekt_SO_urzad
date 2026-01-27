@@ -6,7 +6,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include "config/config.h"
+#include "config/config_all.h"
 
 namespace {
 volatile sig_atomic_t g_loaderPid = -1;
@@ -27,7 +27,7 @@ int main() {
 			std::cerr << "Limit procesow uzytkownika jest zbyt niski (" << limitProc << ")\n";
 			return 1;
 		}
-		if (PETENT_MAX_COUNT_IN_MOMENT > bezpieczny) {
+		if (PETENTS_AMOUNT > bezpieczny) {
 			std::cerr << "\033[33mUwaga: \033[0m limit procesow uzytkownika to " << limitProc
 			           << " Nastąpi koniec programy ";
 			return 0;
@@ -41,15 +41,14 @@ int main() {
 	std::cout << " - SIGINT/SIGQUIT: zamkniecie urzedu\n";
 
 	std::cout << "Parametry:\n";
-	std::cout << " - maksymalna liczba petentow naraz: " << PETENT_MAX_COUNT_IN_MOMENT << "\n";
-	std::cout << " - maksymalna liczba petentow danego dnia: " << DAILY_CLIENTS << "\n";
+	std::cout << " - liczba petentow: " << PETENTS_AMOUNT << "\n";
 	std::cout << " czas trwania symulacji " << SIMULATION_DURATION << "\n";
 
 	// Uruchomienie symulacji
 	pid_t pid = fork();
 	if (pid == 0) {
 		setpgid(0, 0);
-		execl("./loader", "loader", nullptr);
+		execl("./loader_all", "loader_all", nullptr);
 		return 1;
 	}
 	if (pid < 0) {
